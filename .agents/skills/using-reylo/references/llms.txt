@@ -1,0 +1,6064 @@
+# Reylo
+
+> Import .sql files into TypeScript with full type inference. A TypeScript 7.1 content mapper types each query from your live Postgres, MySQL or SQLite database.
+
+Import `.sql` files into your TypeScript code with full type inference
+
+If you have a file like this:
+
+`get_author.sql`:
+
+```sql
+select u.id, u.name, count(p.id)::int as post_count
+from users u
+left join posts p on p.user_id = u.id
+where u.id = :id::int
+group by u.id
+```
+
+You can import it directly from a TypeScript file like this:
+
+`main.ts`:
+
+```ts
+import postgres from "postgres";
+import getAuthor from "./get_author.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+
+// hover over author to see its type
+const author = await getAuthor.run(db, { id: 1 });
+```
+
+**View the schema**
+
+**Postgres**:
+
+```sql
+create extension if not exists pg_jsonschema;
+
+create type user_role as enum ('admin', 'member');
+
+create table users (
+  id serial primary key,                     -- at most one row per id
+  name text not null,                        -- name: string
+  email text unique,                         -- email: string | null
+  role user_role not null default 'member',  -- role: "admin" | "member"
+  tags text[] not null default '{}',         -- tags: (string | null)[]
+  created_at timestamptz                     -- created_at: string
+    not null default now()
+);
+
+create table posts (
+  id serial primary key,
+  user_id integer not null references users (id),
+  title text not null,
+  body text,
+  published_at timestamptz
+);
+
+create table events (
+  id serial primary key,
+  kind text not null
+    check (kind in ('click', 'key')),        -- kind: "click" | "key"
+  payload jsonb not null                     -- payload: what the schema admits
+    check (jsonb_matches_schema('{
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "code": { "type": "string" }
+      }
+    }', payload))
+);
+```
+
+**MySQL**:
+
+```sql
+create table users (
+  id int auto_increment primary key,          -- at most one row per id
+  name text not null,                         -- name: string
+  email varchar(255) unique,                  -- email: string | null
+  role enum('admin', 'member')                -- role: string
+    not null default 'member',
+  tags json not null default (json_array()),  -- tags: unknown
+  created_at datetime                         -- created_at: string, UTC
+    not null default (utc_timestamp())
+);
+
+create table posts (
+  id int auto_increment primary key,
+  user_id int not null,
+  title text not null,
+  body text,
+  published_at datetime,
+  foreign key (user_id) references users (id)
+);
+
+create table events (
+  id int auto_increment primary key,
+  kind text not null,
+  payload json not null                       -- payload: what the schema admits
+    check (json_schema_valid('{
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "code": { "type": "string" }
+      }
+    }', payload))
+);
+```
+
+**SQLite**:
+
+```sql
+create table users (
+  id integer primary key,               -- at most one row per id
+  name text not null,                   -- name: string
+  email text unique,                    -- email: string | null
+  role text not null default 'member'   -- role: string
+    check (role in ('admin', 'member')),
+  tags text not null default '[]',      -- tags: string, JSON text
+  created_at text                       -- created_at: string, UTC
+    not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) strict;
+
+create table posts (
+  id integer primary key,
+  user_id integer not null references users (id),
+  title text not null,
+  body text,
+  published_at text
+) strict;
+
+create table events (
+  id integer primary key,
+  kind text not null,
+  payload text not null
+) strict;
+```
+
+> **Content mappers.** Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in TypeScript 7.1 (currently [in beta](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/)), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
+
+Reylo is the perfect option for the agent era:
+
+- 💪 **The full power of SQL** — any syntax, function or operator your database supports
+- 🌵 **DRY** — no redundant hand-written types
+- 🎯 **Checked against your database** — a misspelled column is a type error
+- 🤖 **Agent-friendly** — DRY code is more maintainable for agents
+- 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🔌 **Bring your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](https://reylo.dev/#run)
+- ⚡ **No codegen** — no generated files, no watcher
+
+## Setup
+
+To install Reylo, you'll need:
+
+- **TypeScript 7.1 (currently in beta).** The first release with content mappers.
+- **Node 24 or later.**
+- **A running dev database.** Reylo reads your current schema from it ([Database](https://reylo.dev/#database) points Reylo at it):
+  - **Postgres** 14 to 18, including Neon and PGlite
+  - **MySQL** 8.0.22 or later, including PlanetScale
+  - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
+
+```text
+Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
+
+Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/colinhacks/reylo/tree/main/examples
+
+1. Check the requirements and install Reylo, the engine of the project's database (@reylosql/postgres, @reylosql/mysql or @reylosql/sqlite) and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
+2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/#typescript
+3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/#plugins
+   The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/colinhacks/reylo/tree/main/examples/<name>
+   If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
+4. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml: https://reylo.dev/#database
+5. Set up the editor the project uses, or VS Code's settings when nothing in the project names an editor: https://reylo.dev/#editors
+6. Write a first query and run it with the project's own driver: https://reylo.dev/#usage and https://reylo.dev/#run
+   For more queries, from nested JSON to bulk inserts, see https://reylo.dev/#inference
+7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
+8. Install Reylo's agent skill, which gives later sessions its rules for writing queries: npx skills add colinhacks/reylo --skill using-reylo
+```
+
+Then set Reylo up in six steps:
+
+### Install
+
+Install Reylo, the engine for your database and TypeScript 7.1:
+
+```sh
+npm install reylo
+npm install -D @reylosql/postgres  # or mysql, sqlite
+npm install -D typescript@beta
+```
+
+### TypeScript
+
+Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo.yaml` or `.reylo.yml`:
+
+`tsconfig.json`:
+
+```jsonc
+{
+  "compilerOptions": { /* ... */ },
+  "contentMappers": [
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
+  ]
+}
+```
+
+Then type-check with `--runExternalCode`, which lets `tsc` run content mappers:
+
+`package.json`:
+
+```jsonc
+{
+  "scripts": {
+    "typecheck": "tsc --noEmit --runExternalCode"
+  }
+}
+```
+
+### Runtime / framework
+
+Install the plugin for your runtime or framework of choice:
+
+**Node**
+
+Load Reylo's preload with `--import`:
+
+```sh
+node --env-file=.env --import reylo/register main.ts
+```
+
+> **In production.** The preload builds each query's module as it loads, so your app needs the engine at run time: install it with `npm install @reylosql/postgres` (or mysql, sqlite), without `-D`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
+
+**Bun**
+
+Add the preload to `bunfig.toml`, and under `[test]` for `bun test`:
+
+`bunfig.toml`:
+
+```toml
+preload = ["reylo/register"]
+
+[test]
+preload = ["reylo/register"]
+```
+
+For Bun's bundler, use the esbuild plugin:
+
+`build.ts`:
+
+```ts
+import reylo from "reylo/esbuild";
+
+await Bun.build({
+  entrypoints: ["main.ts"],
+  target: "bun",
+  plugins: [reylo()],
+  outdir: "dist",
+});
+```
+
+**Nub**
+
+Add the preload to `nub.jsonc`:
+
+`nub.jsonc`:
+
+```jsonc
+{
+  "preload": ["reylo/register"]
+}
+```
+
+**Vite**
+
+Add Reylo's plugin to your Vite config:
+
+`vite.config.ts`:
+
+```ts
+import { defineConfig } from "vite";
+import reylo from "reylo/vite";
+
+export default defineConfig({
+  plugins: [reylo()],
+});
+```
+
+Import `.sql` files from server code only, such as a `.server/` directory: Vite bundles a query wherever it is imported, the browser included. For Vitest, this plugin is all you need.
+
+**Next.js**
+
+Wrap your Next.js config with `withReylo`:
+
+`next.config.ts`:
+
+```ts
+import type { NextConfig } from "next";
+import { withReylo } from "reylo/next";
+
+const nextConfig: NextConfig = {
+  // ...
+};
+
+export default withReylo(nextConfig);
+```
+
+Your server code can now import `.sql` files, with Turbopack or webpack, and `next build` fails on a type error in a query or its caller.
+
+To type-check without building, run `next typegen` first, which writes the route types:
+
+`package.json`:
+
+```json
+{
+  "scripts": {
+    "typecheck": "next typegen && tsc --noEmit --runExternalCode"
+  }
+}
+```
+
+**How the build checks the types**
+
+Next.js type-checks with your project's `tsc` but without `--runExternalCode`, so `withReylo` turns that check off and runs `tsc --noEmit --runExternalCode` itself, after the compile and before the prerender. Next.js still prints "Skipping validation of types" for its own check.
+
+**esbuild**
+
+Add Reylo's plugin to your esbuild build:
+
+`build.mjs`:
+
+```js
+import * as esbuild from "esbuild";
+import reylo from "reylo/esbuild";
+
+await esbuild.build({
+  entryPoints: ["main.ts"],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  plugins: [reylo()],
+  outfile: "dist/main.mjs",
+});
+```
+
+**webpack**
+
+Load `.sql` files with Reylo's loader in your webpack config:
+
+`webpack.config.mjs`:
+
+```js
+export default {
+  // ...
+  module: {
+    rules: [{ test: /\.sql$/, use: "reylo/webpack" }],
+  },
+};
+```
+
+Compile TypeScript with `swc-loader` or `babel-loader`, since TypeScript 7 has no JavaScript API for `ts-loader`.
+
+**Rspack**
+
+Load `.sql` files with Reylo's webpack loader in your Rspack config:
+
+`rspack.config.mjs`:
+
+```js
+export default {
+  // ...
+  module: {
+    rules: [{ test: /\.sql$/, use: "reylo/webpack" }],
+  },
+};
+```
+
+**Cloudflare**
+
+Add Reylo's Vite plugin beside Cloudflare's:
+
+`vite.config.ts`:
+
+```ts
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { defineConfig } from "vite";
+import reylo from "reylo/vite";
+
+export default defineConfig({
+  plugins: [reylo(), cloudflare()],
+});
+```
+
+Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](https://reylo.dev/#direct_url) in `.reylo.yaml` to the local D1 file that `wrangler d1 migrations apply --local` creates. Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
+
+**Jest**
+
+Add Reylo's transformer to your Jest config:
+
+`jest.config.js`:
+
+```js
+export default {
+  transform: { "\\.sql$": "reylo/jest" },
+  extensionsToTreatAsEsm: [".sql"],
+};
+```
+
+```sh
+# Jest runs ES modules only behind this Node flag
+NODE_OPTIONS=--experimental-vm-modules npx jest
+```
+
+For a complete, working project, copy the example for your setup. Its README, under "How Reylo is wired in", names every line Reylo needs:
+
+- [Node](https://github.com/colinhacks/reylo/tree/main/examples/node)
+- [Nub](https://github.com/colinhacks/reylo/tree/main/examples/nub)
+- [Bun](https://github.com/colinhacks/reylo/tree/main/examples/bun)
+- [Vite](https://github.com/colinhacks/reylo/tree/main/examples/vite)
+- [Next.js](https://github.com/colinhacks/reylo/tree/main/examples/nextjs)
+- [esbuild](https://github.com/colinhacks/reylo/tree/main/examples/esbuild)
+- [webpack](https://github.com/colinhacks/reylo/tree/main/examples/webpack)
+- [Rspack](https://github.com/colinhacks/reylo/tree/main/examples/rspack)
+- [Jest](https://github.com/colinhacks/reylo/tree/main/examples/jest)
+- [Cloudflare Workers](https://github.com/colinhacks/reylo/tree/main/examples/cloudflare-workers)
+
+### Database
+
+**Reylo requires a connection to a live dev database.** It retrieves the types of each compiled query, its parameters and its columns, from the database itself. Reylo finds your dev database through the `DATABASE_URL` environment variable, and the URL's scheme tells it which database you use:
+
+**Postgres**, `.env`:
+
+```sh
+# or postgresql://
+DATABASE_URL=postgres://localhost:5432/app
+```
+
+**MySQL**, `.env`:
+
+```sh
+# or mariadb://
+DATABASE_URL=mysql://root@localhost:3306/app
+```
+
+**SQLite**, `.env`:
+
+```sh
+# or sqlite:; the path starts at package.json
+DATABASE_URL=file:./app.db
+```
+
+To override this, create a `.reylo.yaml` file in your project root and set the `direct_url` field:
+
+`.reylo.yaml`:
+
+```yaml
+direct_url: postgres://localhost:5432/app
+```
+
+You can also reference other environment variables via string interpolation:
+
+`.reylo.yaml`:
+
+```yaml
+direct_url: ${APP_DATABASE_URL}
+```
+
+Or specify a set of `.env` files to load:
+
+`.reylo.yaml`:
+
+```yaml
+# the default is [.env.local, .env]
+env: [.env.development, .env]
+```
+
+### Editor
+
+Set up your editor to use the TypeScript 7.1 language server, with content mappers on. Then a hover over a query shows its types, its SQL and the comment at the top of its `.sql` file, an error in a `.sql` file is underlined where it is, and go-to-definition on a query opens its `.sql` file.
+
+**VS Code**
+
+1. Install the **TypeScript 7** extension (`TypeScriptTeam.native-preview`).
+2. Point it at the project's TypeScript: the extension's own copy is TypeScript 7.0, which has no content mappers.
+
+   ```json title=".vscode/settings.json"
+   {
+     "js/ts.experimental.useTsgo": true,
+     "js/ts.tsdk.path": "./node_modules/typescript"
+   }
+   ```
+
+3. Trust the workspace, and click **Allow** when the extension asks to use the workspace's TypeScript. Content mappers run in a trusted workspace only. Missed it? It waits under the bell in the status bar, or **Developer: Reload Window** asks again.
+
+Keep `DATABASE_URL` in `.env`: the editor doesn't see your shell's environment.
+
+**Cursor**
+
+1. Install the **TypeScript 7** extension (`TypeScriptTeam.native-preview`).
+2. Point it at the project's TypeScript: the extension's own copy is TypeScript 7.0, which has no content mappers.
+
+   ```json title=".vscode/settings.json"
+   {
+     "js/ts.experimental.useTsgo": true,
+     "js/ts.tsdk.path": "./node_modules/typescript"
+   }
+   ```
+
+3. Trust the workspace, and click **Allow** when the extension asks to use the workspace's TypeScript. Content mappers run in a trusted workspace only. Missed it? It waits under the bell in the status bar, or **Developer: Reload Window** asks again.
+
+Keep `DATABASE_URL` in `.env`: the editor doesn't see your shell's environment.
+
+**Zed**
+
+1. Install the **TypeScript Language Server** extension by Zed Industries (search for "tsgo").
+2. Point it at the project's TypeScript, with content mappers on:
+
+   ```jsonc title=".zed/settings.json"
+   {
+     "languages": {
+       "TypeScript": {
+         "language_servers": [
+           "typescript-ls",
+           "!vtsls",
+           "!typescript-language-server",
+           "..."
+         ]
+       },
+       "TSX": {
+         "language_servers": [
+           "typescript-ls",
+           "!vtsls",
+           "!typescript-language-server",
+           "..."
+         ]
+       }
+     },
+     "lsp": {
+       "typescript-ls": {
+         // the extension's own download is TypeScript 7.0, which has no content mappers
+         "binary": {
+           "path": "node_modules/typescript/bin/tsc",
+           "arguments": ["--lsp", "--stdio"]
+         },
+         "initialization_options": { "runExternalCode": true }
+       }
+     }
+   }
+   ```
+
+3. Trust the folder. In restricted mode, Zed starts no language server.
+
+Zed doesn't send `.sql` files to the language server, so an error inside one shows only in the type check.
+
+### Skill
+
+Install Reylo's agent skill, which gives your coding agent Reylo's rules for writing and running queries in every session:
+
+```sh
+npx skills add colinhacks/reylo --skill using-reylo
+```
+
+## Usage
+
+Write a query in a `.sql` file, import it, and run it with your database driver. The query is your database's own SQL: any function, operator or syntax it supports works. Reylo uses your live dev database to compile the query and retrieve its types.
+
+`main.ts`:
+
+```ts
+import postgres from "postgres";
+import getUser from "./get_user.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+```
+
+`get_user.sql`:
+
+```sql
+select id, name, email from users where id = :id::int
+```
+
+Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or transaction taken from one, from any of the [supported drivers](https://reylo.dev/#run).
+
+### `.sql`
+
+To get the compiled query, as Reylo sends it to your database:
+
+```ts
+import getUser from "./get_user.sql";
+
+getUser.sql; // "select id, name, email from users where id = $1::int"
+```
+
+To get the file's contents as written, before Reylo compiles its [parameters](https://reylo.dev/#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your [logs and traces](https://reylo.dev/#tracing); Reylo's own errors about the query start with it.
+
+### `.run()`
+
+To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters:
+
+```ts
+import postgres from "postgres";
+import getUser from "./get_user.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+//    ^? const user: {
+//           id: number;
+//           name: string;
+//           email: string | null;
+//       } | null
+```
+
+Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers.
+
+#### Postgres
+
+**pg**:
+
+```ts
+import pg from "pg";
+import getUser from "./get_user.sql";
+
+const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+`postgres.js`:
+
+```ts
+import postgres from "postgres";
+import getUser from "./get_user.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+`Bun.sql`:
+
+```ts
+import { SQL } from "bun";
+import getUser from "./get_user.sql";
+
+const db = new SQL(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**PGlite**:
+
+```ts
+import { PGlite } from "@electric-sql/pglite";
+import getUser from "./get_user.sql";
+
+const db = new PGlite("./pgdata");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**Neon**:
+
+```ts
+import { neon } from "@neondatabase/serverless";
+import getUser from "./get_user.sql";
+
+const db = neon(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**pg-promise**:
+
+```ts
+import pgPromise from "pg-promise";
+import getUser from "./get_user.sql";
+
+const pgp = pgPromise();
+const db = pgp(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**Slonik**:
+
+```ts
+import { createPool } from "slonik";
+import getUser from "./get_user.sql";
+
+const db = await createPool(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**@vercel/postgres**:
+
+```ts
+// deprecated on npm; type-checked against Reylo, not run in its tests
+import { sql } from "@vercel/postgres";
+import getUser from "./get_user.sql";
+
+const user = await getUser.run(sql, { id: 1 });
+```
+
+**Drizzle**:
+
+```ts
+import { drizzle } from "drizzle-orm/node-postgres";
+import getUser from "./get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+Transactions are also supported.
+
+**pg**:
+
+```ts
+const client = await db.connect();
+try {
+  await client.query("begin");
+  await getUser.run(client, { id: 1 });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
+```
+
+`postgres.js`:
+
+```ts
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
+```
+
+`Bun.sql`:
+
+```ts
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
+```
+
+**PGlite**:
+
+```ts
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+**Neon**:
+
+```ts
+import { Pool } from "@neondatabase/serverless";
+
+// a transaction takes a Pool, over a WebSocket
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const client = await pool.connect();
+try {
+  await client.query("begin");
+  await getUser.run(client, { id: 1 });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
+```
+
+**pg-promise**:
+
+```ts
+await db.tx((t) => getUser.run(t, { id: 1 }));
+```
+
+**Slonik**:
+
+```ts
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+**@vercel/postgres**:
+
+```ts
+const client = await sql.connect();
+try {
+  await client.query("begin");
+  await getUser.run(client, { id: 1 });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
+```
+
+**Drizzle**:
+
+```ts
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+#### MySQL
+
+**mysql2**:
+
+```ts
+import mysql from "mysql2/promise";
+import getUser from "./get_user.sql";
+
+const db = mysql.createPool(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**mariadb**:
+
+```ts
+// mariadb takes only a mariadb:// URL, which Reylo reads as MySQL
+import mariadb from "mariadb";
+import getUser from "./get_user.sql";
+
+const db = mariadb.createPool(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**PlanetScale**:
+
+```ts
+import { connect } from "@planetscale/database";
+import getUser from "./get_user.sql";
+
+const db = connect({ url: process.env.DATABASE_URL });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+`Bun.sql`:
+
+```ts
+import { SQL } from "bun";
+import getUser from "./get_user.sql";
+
+const db = new SQL(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**Drizzle**:
+
+```ts
+import { drizzle } from "drizzle-orm/mysql2";
+import getUser from "./get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+Transactions are also supported.
+
+**mysql2**:
+
+```ts
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await getUser.run(conn, { id: 1 });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
+```
+
+**mariadb**:
+
+```ts
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await getUser.run(conn, { id: 1 });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
+```
+
+**PlanetScale**:
+
+```ts
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+`Bun.sql`:
+
+```ts
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
+```
+
+**Drizzle**:
+
+```ts
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+#### SQLite
+
+**better-sqlite3**:
+
+```ts
+import Database from "better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**node:sqlite**:
+
+```ts
+import { DatabaseSync } from "node:sqlite";
+import getUser from "./get_user.sql";
+
+const db = new DatabaseSync("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**bun:sqlite**:
+
+```ts
+import { Database } from "bun:sqlite";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+`Bun.sql`:
+
+```ts
+import { SQL } from "bun";
+import getUser from "./get_user.sql";
+
+const db = new SQL({ adapter: "sqlite", filename: "app.db" });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**libSQL**:
+
+```ts
+import { createClient } from "@libsql/client";
+import getUser from "./get_user.sql";
+
+const db = createClient({ url: "file:app.db" });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**Turso**:
+
+```ts
+import { connect } from "@tursodatabase/database";
+import getUser from "./get_user.sql";
+
+const db = await connect("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**Cloudflare D1**:
+
+```ts
+import type { D1Database } from "@cloudflare/workers-types";
+import getUser from "./get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { DB: D1Database }) {
+    const user = await getUser.run(env.DB, { id: 1 });
+    return Response.json(user);
+  },
+};
+```
+
+**Durable Objects**:
+
+```ts
+import { DurableObject } from "cloudflare:workers";
+import getUser from "./get_user.sql";
+
+export class Board extends DurableObject {
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+}
+```
+
+**sqlite3**:
+
+```ts
+import sqlite3 from "sqlite3";
+import getUser from "./get_user.sql";
+
+const db = new sqlite3.Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**sqlite**:
+
+```ts
+import { open } from "sqlite";
+import sqlite3 from "sqlite3";
+import getUser from "./get_user.sql";
+
+const db = await open({ filename: "app.db", driver: sqlite3.Database });
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+**Drizzle**:
+
+```ts
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = drizzle("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+Transactions are also supported.
+
+**better-sqlite3**:
+
+```ts
+// the function must not await, so it runs .runSync()
+db.transaction(() => getUser.runSync(db, { id: 1 }))();
+```
+
+**node:sqlite**:
+
+```ts
+db.exec("begin");
+try {
+  getUser.runSync(db, { id: 1 });
+  db.exec("commit");
+} catch (error) {
+  db.exec("rollback");
+  throw error;
+}
+```
+
+**bun:sqlite**:
+
+```ts
+// the function must not await, so it runs .runSync()
+db.transaction(() => getUser.runSync(db, { id: 1 }))();
+```
+
+`Bun.sql`:
+
+```ts
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
+```
+
+**libSQL**:
+
+```ts
+const tx = await db.transaction("write");
+try {
+  await getUser.run(tx, { id: 1 });
+  await tx.commit();
+} finally {
+  tx.close();
+}
+```
+
+**Turso**:
+
+```ts
+await db.transactionAsync((tx) => getUser.run(tx, { id: 1 }))();
+```
+
+**Durable Objects**:
+
+```ts
+export class Board extends DurableObject {
+  user(id: number) {
+    return this.ctx.storage.transactionSync(() =>
+      getUser.runSync(this.ctx.storage.sql, { id }),
+    );
+  }
+}
+```
+
+**sqlite3**:
+
+```ts
+import { promisify } from "node:util";
+
+const exec = promisify(db.exec.bind(db));
+await exec("begin");
+try {
+  await getUser.run(db, { id: 1 });
+  await exec("commit");
+} catch (error) {
+  await exec("rollback");
+  throw error;
+}
+```
+
+**sqlite**:
+
+```ts
+await db.exec("begin");
+try {
+  await getUser.run(db, { id: 1 });
+  await db.exec("commit");
+} catch (error) {
+  await db.exec("rollback");
+  throw error;
+}
+```
+
+**Drizzle**:
+
+```ts
+db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
+```
+
+D1 has no transaction a query can join: its `batch()` takes D1's own prepared statements.
+
+### `.runSync()`
+
+For databases that support synchronous operations, you can use `.runSync()`.
+
+> **Supported drivers.** - `better-sqlite3`
+> - `node:sqlite`
+> - `bun:sqlite`
+> - the `Database` of `@tursodatabase/database/compat`
+> - a Durable Object's `ctx.storage.sql`
+
+```ts
+import Database from "better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+const user = getUser.runSync(db, { id: 1 });
+//    ^? const user: {
+//           id: number;
+//           name: string;
+//           email: string | null;
+//       } | null
+```
+
+### `.try()`
+
+To get your database's errors as values, use `.try()`. It returns `{ value }`, or `{ error }` when the database refuses the query:
+
+**main.ts (Postgres)**:
+
+```ts
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.condition === "unique_violation") {
+  result.error.constraint;
+  //           ^? constraint: "users_email_key" | "users_pkey" | undefined
+}
+```
+
+**main.ts (MySQL)**:
+
+```ts
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.code === "ER_DUP_ENTRY") {
+  result.error.key;
+  //           ^? key: "users.PRIMARY" | "users.email" | undefined
+}
+```
+
+**main.ts (SQLite)**:
+
+```ts
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
+  result.error.columns;
+  //           ^? columns: readonly ["email"] | undefined
+}
+```
+
+`create_user.sql`:
+
+```sql
+insert into users (name, email) values (:name, :email)
+```
+
+The error is your database's own, typed with every code it defines, so TypeScript catches a misspelled one:
+
+| Database | Its code | What else it names |
+| --- | --- | --- |
+| Postgres | `code`, the SQLSTATE, and `condition`, its name | `constraint`, `table`, `column`, `schema`, `detail`, `hint`, `position` |
+| MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
+| SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
+
+When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
+
+Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say. The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
+
+On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](https://reylo.dev/postgres#database-errors) shows how to carry on after an error.
+
+### `.with()`
+
+To bind the query to a client, call `.with()`. It returns a function that takes the parameters:
+
+```ts
+import getUser from "./get_user.sql";
+
+const get = getUser.with(db);
+const user = await get({ id: 1 });
+```
+
+## Inference
+
+Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
+
+Reylo is a [content mapper](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/#content-mappers), the kind of plugin [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) introduced for files that aren't TypeScript. Whenever the type checker meets a `.sql` import, in `tsc` or in your editor, it hands Reylo the file and takes back the module's types.
+
+To type a query, Reylo has your live database prepare it, without running it, and reads the catalog. From the answer, it learns:
+
+- **Parameter types** — from where each parameter is used, or its cast
+- **Column types** — from the table, or the expression that computes the column
+- **Nullability** — from `NOT NULL` and outer joins
+- **Cardinality** — from keys, aggregates, `limit 1` and `returning`
+- **Column comments** — on Postgres and MySQL, shown when you hover a field that reads the column
+
+**The TypeScript type of each SQL type, in each dialect**
+
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`.
+
+**Postgres**
+
+| SQL type | TypeScript |
+| --- | --- |
+| `smallint`, `integer`, `oid` | `number` |
+| `bigint` | `bigint` |
+| `real`, `double precision` | `number` |
+| `numeric`, `money` | `string` |
+| `text`, `varchar`, `char` | `string` |
+| `boolean` | `boolean` |
+| `uuid` | `string` |
+| `date` | `string`, as `2026-10-20` |
+| `timestamp` | `string`, as `2026-10-20T10:00:00.123456` |
+| `timestamptz` | `string`, the instant in UTC, as `2026-10-20T08:00:00.123456Z` |
+| `time`, `timetz` | `string` |
+| `interval` | `string`, an ISO 8601 duration, as `P1DT2H3M4S` |
+| `json`, `jsonb` | [typed by its schema or the query](https://reylo.dev/#json) |
+| `bytea` | `Uint8Array` |
+| An array | an array of its element type, a `NULL` element `null` |
+| An enum | the union of its labels |
+| A domain | its base type |
+| A row value | `string` |
+| pgvector's `vector`, `halfvec` | `number[]` |
+| `hstore` | `Record<string, string \| null>` |
+| Every other type (`inet`, `cidr`, ranges, `point`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
+
+**MySQL**
+
+| SQL type | TypeScript |
+| --- | --- |
+| `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `YEAR` | `number` |
+| `BOOLEAN` (a `TINYINT(1)`), `BIT(1)` | `boolean` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT`, `AND`, `OR` | `boolean` |
+| `BIGINT`, `count(*)` | `bigint` |
+| `DECIMAL` | `string` |
+| `FLOAT`, `DOUBLE` | `number` |
+| `CHAR`, `VARCHAR`, `TEXT` | `string` |
+| `ENUM` | `string` |
+| `SET` | `string`, as `a,b` |
+| `DATE` | `string`, as `2026-10-20` |
+| `DATETIME`, `TIMESTAMP` | `string`, as `2026-10-20T10:00:00.123` |
+| `TIME` | `string` |
+| `JSON` | [typed by its schema or the query](https://reylo.dev/#json) |
+| `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` |
+| `VECTOR` | `number[]` |
+
+**SQLite**
+
+| Declared type | TypeScript |
+| --- | --- |
+| `INTEGER`, `INT`, `count(*)` | `number` |
+| `BIGINT`, `INT8`, `UNSIGNED BIG INT` | `bigint` |
+| `REAL` | `number` |
+| `TEXT` | `string` |
+| `BLOB` | `Uint8Array` |
+| `BOOLEAN`, `BOOL` | `boolean` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT`, `AND`, `OR` | `boolean` |
+| `NUMERIC`, `DATE`, `DATETIME` | `number \| string` |
+| No type, or `ANY` in a `STRICT` table | `unknown` |
+| `json_object(…)`, `json_group_array(…)` | [the object or array it builds](https://reylo.dev/#json) |
+
+For every rule and edge case of each database, from 64-bit integers to time zones, nulls, row counts and parameters, see its own page: [Postgres](https://reylo.dev/postgres#data-types), [MySQL](https://reylo.dev/mysql#data-types) and [SQLite](https://reylo.dev/sqlite#data-types).
+
+At run time, the [preload](https://reylo.dev/#setup-node) or a bundler [plugin](https://reylo.dev/#plugins) turns the same file into a module that runs the query through your driver.
+
+Reylo caches each answer in [`.reylo/`](https://reylo.dev/#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
+
+**Where each type comes from, in each dialect**
+
+**Postgres**
+
+Reylo sends the query to the live database [prepared](https://www.postgresql.org/docs/current/sql-prepare.html) and reads back the database's own type information on its parameters and return type. This information is cross-referenced against the schema catalog, enabling high-fidelity type inference for any query.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the server's description of the prepared statement |
+| Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
+| Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
+| Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+| Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
+
+**MySQL**
+
+Reylo sends the query to the live database [prepared](https://dev.mysql.com/doc/refman/8.4/en/sql-prepared-statements.html) and reads back the database's own type information on its parameters and return type.
+
+Reylo adds which parameters may be null, the row count, and the shape of JSON the query builds.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | the prepared statement's metadata; whether one may be null, from the statement, as on Postgres |
+| Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
+| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
+| Cardinality | primary and unique keys, aggregates; a write is `void` |
+| Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
+
+**SQLite**
+
+Reylo reads the schema from the database file and [prepares](https://sqlite.org/c3ref/prepare.html) the query in its own copy of SQLite, which reports where each column and parameter comes from.
+
+| What | Where it comes from |
+| --- | --- |
+| Parameter types | where SQLite places the parameter: a comparison with a column, an element of a row value, an `insert` or `update` column, a `cast`, `limit` and `offset` |
+| Column types | the declared type's affinity |
+| Nullability | the table's `NOT NULL`, outer joins, Reylo's table of SQLite's built-in functions |
+| Cardinality | unique indexes and `integer primary key` |
+| Nested JSON | built with `json_object` and `json_group_array`, typed from their arguments |
+
+### Named parameters
+
+For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
+
+Name a parameter with a colon, and Reylo infers its type from where it's used:
+
+```sql
+update users
+set name = :name
+where id = :id
+```
+
+```ts
+// Params
+{ name: string; id: number }
+// Returns
+void
+```
+
+### Casts
+
+Where the query doesn't pin down a parameter's type, cast it. Reylo compiles the cast to each database's own:
+
+```sql
+select id, name
+from users
+where name like concat('%', :q::text, '%')
+```
+
+```ts
+// Params
+{ q: string }
+// Returns
+{ id: number; name: string }[]
+```
+
+**When a parameter's type cannot be inferred**
+
+It's an error that says to [cast it](https://reylo.dev/#casts), unless [`strict_params: false`](https://reylo.dev/#strict_params) types it `unknown`.
+
+**Postgres**
+
+Postgres types a parameter from its context: a bare `select :x` is a `string`, and `select :x is null` is an error until a cast types it.
+
+**MySQL**
+
+MySQL types every parameter: one that nothing else types, such as a bare `select :x`, is a `string`.
+
+**SQLite**
+
+A bare `select :x`, or an argument of a table-valued function other than `json_each` and `json_tree`, has no type until a cast gives it one:
+
+```sql
+select length(:text::text) as n
+```
+
+A call to a function your application registers fails the type check, cast or not: Reylo prepares the statement in its own SQLite, which lacks it ("no such function"). Apply that function in TypeScript instead.
+
+### Column types
+
+Each column comes back with its type:
+
+Postgres:
+
+```sql
+select id, name
+from users
+where role = :role
+```
+
+```ts
+// Params
+{ role: "admin" | "member" }
+// Returns
+{ id: number; name: string }[]
+```
+
+MySQL and SQLite:
+
+```sql
+select id, name
+from users
+where role = :role
+```
+
+```ts
+// Params
+{ role: string }
+// Returns
+{ id: number; name: string }[]
+```
+
+### Left joins
+
+A left join makes the joined table's columns nullable:
+
+```sql
+select u.name, p.title
+from users u
+left join posts p on p.user_id = u.id
+where u.id = :user_id::int
+```
+
+```ts
+// Params
+{ user_id: number }
+// Returns
+{ name: string; title: string | null }[]
+```
+
+A test in the `where` that fails on null, like a comparison, makes the whole joined row non-null:
+
+```sql
+select u.name, p.title
+from users u
+left join posts p on p.user_id = u.id
+where p.published_at > :since
+```
+
+```ts
+// Params
+{ since: string }
+// Returns
+{ name: string; title: string }[]
+```
+
+### Computed columns
+
+Reylo infers which computed columns can never be null:
+
+Postgres:
+
+```sql
+select u.name,
+  coalesce(u.email, '') as email,
+  exists (select 1 from posts p where p.user_id = u.id) as has_posts
+from users u
+where u.role = :role
+```
+
+```ts
+// Params
+{ role: "admin" | "member" }
+// Returns
+{ name: string; email: string; has_posts: boolean }[]
+```
+
+MySQL and SQLite:
+
+```sql
+select u.name,
+  coalesce(u.email, '') as email,
+  exists (select 1 from posts p where p.user_id = u.id) as has_posts
+from users u
+where u.role = :role
+```
+
+```ts
+// Params
+{ role: string }
+// Returns
+{ name: string; email: string; has_posts: boolean }[]
+```
+
+### Nullable parameters
+
+To accept null, cast a parameter to `nullable(…)`. Leaving it out passes `null`:
+
+```sql
+select id, title
+from posts
+where user_id = coalesce(:user_id::nullable(int), user_id)
+```
+
+```ts
+// Params
+{ user_id?: number | null }
+// Returns
+{ id: number; title: string }[]
+```
+
+A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+
+### Dynamic sorting
+
+To pick the sort order at run time, order by a `case` on a parameter:
+
+```sql
+-- a parameter appears once, so one read twice comes from a with
+with input as (select :sort::text as sort)
+select u.id, u.name
+from users u, input
+order by
+  case when input.sort = 'name' then u.name end,
+  case when input.sort = 'newest' then u.created_at end desc,
+  u.id
+```
+
+```ts
+// Params
+{ sort: string }
+// Returns
+{ id: number; name: string }[]
+```
+
+### Dynamic filtering
+
+To filter a list by a form's values, pass them as one [JSON parameter](https://reylo.dev/#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
+
+Postgres:
+
+```sql
+with input as (
+  select * from jsonb_to_record(:filters::jsonb('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }')) as f(q text, author_id int, status text, sort text)
+)
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+cross join input
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and case input.status
+    when 'published' then p.published_at is not null
+    when 'draft' then p.published_at is null
+    else true
+  end
+order by
+  case when input.sort = 'title' then p.title end,
+  case when input.sort = 'oldest' then p.id end,
+  p.id desc
+```
+
+```ts
+// Params
+{
+  filters: {
+    q?: string;
+    author_id?: number;
+    status?: "published" | "draft" | "all";
+    sort?: "newest" | "oldest" | "title";
+  };
+}
+// Returns
+{ id: number; title: string; author: string }[]
+```
+
+MySQL:
+
+```sql
+with input as (
+  select f.q, f.author_id, f.status, f.sort
+  from json_table(:filters::json('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }'), '$' columns (
+    q varchar(100) path '$.q',
+    author_id int path '$.author_id',
+    status varchar(9) path '$.status',
+    sort varchar(6) path '$.sort'
+  )) as f
+)
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+cross join input
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and case input.status
+    when 'published' then p.published_at is not null
+    when 'draft' then p.published_at is null
+    else true
+  end
+order by
+  case when input.sort = 'title' then p.title end,
+  case when input.sort = 'oldest' then p.id end,
+  p.id desc
+```
+
+```ts
+// Params
+{
+  filters: {
+    q?: string;
+    author_id?: number;
+    status?: "published" | "draft" | "all";
+    sort?: "newest" | "oldest" | "title";
+  };
+}
+// Returns
+{ id: number; title: string; author: string }[]
+```
+
+SQLite:
+
+```sql
+with input as (
+  select f ->> '$.q' as q, f ->> '$.author_id' as author_id, f ->> '$.status' as status, f ->> '$.sort' as sort
+  from (select :filters::json('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }') as f)
+)
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+cross join input
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and case input.status
+    when 'published' then p.published_at is not null
+    when 'draft' then p.published_at is null
+    else true
+  end
+order by
+  case when input.sort = 'title' then p.title end,
+  case when input.sort = 'oldest' then p.id end,
+  p.id desc
+```
+
+```ts
+// Params
+{
+  filters: {
+    q?: string;
+    author_id?: number;
+    status?: "published" | "draft" | "all";
+    sort?: "newest" | "oldest" | "title";
+  };
+}
+// Returns
+{ id: number; title: string; author: string }[]
+```
+
+A filter left out takes its default, and one with none, like the author, is null, which turns it off:
+
+```ts
+import searchPosts from "./search_posts.sql";
+
+// POST /posts/search with { "q": "sql", "status": "draft" }
+const posts = await searchPosts.run(db, { filters: await request.json() });
+```
+
+### Unique keys
+
+Reylo infers each query's cardinality, how many rows it returns. A query that matches a unique key returns one row or null:
+
+```sql
+-- Schema (Postgres)
+create table users (
+  id serial primary key,
+  name text not null,
+  email text unique
+);
+```
+
+```sql
+-- Schema (MySQL)
+create table users (
+  id int auto_increment primary key,
+  name text not null,
+  email varchar(255) unique
+);
+```
+
+```sql
+-- Schema (SQLite)
+create table users (
+  id integer primary key,
+  name text not null,
+  email text unique
+) strict;
+```
+
+```sql
+select id, name
+from users
+where email = :email::text
+```
+
+```ts
+// Params
+{ email: string }
+// Returns
+{ id: number; name: string }[]
+```
+
+**Which matches count as a key, in each dialect**
+
+**Postgres**
+
+Also a key match:
+
+- a join on the joined table's key
+- a unique index on an expression or with a `where`
+- a `distinct` or `group by` over values the `where` pins
+- a subquery, a `with` query or a view that keeps a key
+
+**MySQL**
+
+Also a key match:
+
+- a join on the joined table's numeric key
+- a `distinct` or `group by` over values the `where` pins
+- a derived table, a `with` query or a view that keeps a key
+
+A unique index on an expression gives `many`.
+
+**SQLite**
+
+Also a key match:
+
+- a join on the joined table's key
+- a `distinct` or `group by` over values the `where` pins
+- a subquery, a `with` query or a view that keeps a key
+
+A unique index on an expression or with a `where` gives `many`.
+
+At run time, `.run()` throws rather than return a row count its type rules out.
+
+### Aggregates
+
+An aggregate without a group by returns exactly one row:
+
+Postgres:
+
+```sql
+select count(*)::int as posts
+from posts
+where user_id = :user_id::int
+```
+
+```ts
+// Params
+{ user_id: number }
+// Returns
+{ posts: number }[]
+```
+
+MySQL:
+
+```sql
+select count(*) as posts
+from posts
+where user_id = :user_id::int
+```
+
+```ts
+// Params
+{ user_id: number }
+// Returns
+{ posts: bigint }[]
+```
+
+SQLite:
+
+```sql
+select count(*) as posts
+from posts
+where user_id = :user_id::int
+```
+
+```ts
+// Params
+{ user_id: number }
+// Returns
+{ posts: number }[]
+```
+
+A rollup adds a row for the total, whose grouped column is null:
+
+Postgres:
+
+```sql
+select user_id, count(*)::int as posts
+from posts
+group by rollup (user_id)
+order by user_id
+```
+
+```ts
+// Params
+void
+// Returns
+{ user_id: number | null; posts: number }[]
+```
+
+MySQL:
+
+```sql
+select user_id, count(*) as posts
+from posts
+group by user_id with rollup
+order by user_id
+```
+
+```ts
+// Params
+void
+// Returns
+{ user_id: bigint | null; posts: bigint }[]
+```
+
+### Window functions
+
+Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
+
+Postgres and MySQL:
+
+```sql
+select id, title,
+  row_number() over (
+    partition by user_id
+    order by published_at
+  ) as n,
+  lag(title) over (order by id) as prev
+from posts
+```
+
+```ts
+// Params
+void
+// Returns
+{ id: number; title: string; n: bigint; prev: string | null }[]
+```
+
+SQLite:
+
+```sql
+select id, title,
+  row_number() over (
+    partition by user_id
+    order by published_at
+  ) as n,
+  lag(title) over (order by id) as prev
+from posts
+```
+
+```ts
+// Params
+void
+// Returns
+{ id: number; title: string; n: number; prev: string | null }[]
+```
+
+### Subqueries
+
+Run unrelated subqueries side by side, in one query and one round trip. With no `from`, the query returns exactly one row, and `.run()` resolves to it:
+
+Postgres:
+
+```sql
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
+select
+  (select count(*)::int from users) as user_count,
+  (select count(*)::int from posts) as post_count,
+  (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'id', r.id,
+      'title', r.title
+    )), '[]')
+    from recent r
+  ) as recent_posts
+```
+
+```ts
+// Params
+{ limit: number }
+// Returns
+{
+  user_count: number;
+  post_count: number;
+  recent_posts: { id: number; title: string }[];
+}[]
+```
+
+MySQL:
+
+```sql
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
+select
+  (select count(*) from users) as user_count,
+  (select count(*) from posts) as post_count,
+  (
+    select coalesce(json_arrayagg(json_object(
+      'id', r.id,
+      'title', r.title
+    )), json_array())
+    from recent r
+  ) as recent_posts
+```
+
+```ts
+// Params
+{ limit: number }
+// Returns
+{
+  user_count: bigint;
+  post_count: bigint;
+  recent_posts: { id: number; title: string }[];
+}[]
+```
+
+SQLite:
+
+```sql
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
+select
+  (select count(*) from users) as user_count,
+  (select count(*) from posts) as post_count,
+  (
+    select json_group_array(json_object(
+      'id', r.id,
+      'title', r.title
+    ))
+    from recent r
+  ) as recent_posts
+```
+
+```ts
+// Params
+{ limit: number }
+// Returns
+{
+  user_count: number;
+  post_count: number;
+  recent_posts: { id: number; title: string }[];
+}[]
+```
+
+A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
+
+Postgres:
+
+```sql
+select u.name, p.title, p.published_at
+from users u
+left join lateral (
+  select title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc nulls last
+  limit 1
+) p on true
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  name: string;
+  title: string | null;
+  published_at: string | null;
+}[]
+```
+
+MySQL:
+
+```sql
+select u.name, p.title, p.published_at
+from users u
+left join lateral (
+  select title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc
+  limit 1
+) p on true
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  name: string;
+  title: string | null;
+  published_at: string | null;
+}[]
+```
+
+### Returning rows
+
+An insert that returns its row resolves to exactly that row:
+
+Postgres and SQLite:
+
+```sql
+insert into users (name)
+values (:name::text)
+returning id
+```
+
+```ts
+// Params
+{ name: string }
+// Returns
+{ id: number }[]
+```
+
+So does an upsert, whether it inserts the row or updates it:
+
+Postgres and SQLite:
+
+```sql
+insert into users (name, email)
+values (:name, :email::text)
+on conflict (email) do update
+  set name = excluded.name
+returning id, name
+```
+
+```ts
+// Params
+{ name: string; email: string }
+// Returns
+{ id: number; name: string }[]
+```
+
+On Postgres 18, an update can return its values from before and after, as `old` and `new`:
+
+Postgres:
+
+```sql
+update users
+set name = :name
+where id = :id
+returning old.name as old_name, new.name as new_name
+```
+
+```ts
+// Params
+{ name: string; id: number }
+// Returns
+{ old_name: string; new_name: string }[]
+```
+
+### Enums
+
+A text column whose check constraint lists its values is a union of them, as a Postgres enum is:
+
+```sql
+-- Schema
+create table events (
+  id serial primary key,
+  kind text not null check (kind in ('click', 'key'))
+);
+```
+
+Postgres:
+
+```sql
+select id, kind
+from events
+order by id desc
+limit :limit::int
+```
+
+```ts
+// Params
+{ limit: number }
+// Returns
+{ id: number; kind: "click" | "key" }[]
+```
+
+### JSON aggregation
+
+Type information bubbles up through JSON aggregation:
+
+Postgres:
+
+```sql
+select u.name,
+  jsonb_agg(jsonb_build_object('id', p.id, 'title', p.title)) as posts
+from users u
+join posts p on p.user_id = u.id
+where p.published_at > :since
+group by u.id
+```
+
+```ts
+// Params
+{ since: string }
+// Returns
+{ name: string; posts: { id: number; title: string }[] }[]
+```
+
+MySQL:
+
+```sql
+select u.name,
+  json_arrayagg(json_object('id', p.id, 'title', p.title)) as posts
+from users u
+join posts p on p.user_id = u.id
+where p.published_at > :since
+group by u.id
+```
+
+```ts
+// Params
+{ since: string }
+// Returns
+{ name: string; posts: { id: number; title: string }[] }[]
+```
+
+SQLite:
+
+```sql
+select u.name,
+  json_group_array(json_object('id', p.id, 'title', p.title)) as posts
+from users u
+join posts p on p.user_id = u.id
+where p.published_at > :since
+group by u.id
+```
+
+```ts
+// Params
+{ since: string }
+// Returns
+{ name: string; posts: { id: number; title: string }[] }[]
+```
+
+### Nested fetching
+
+Fetch each row's related rows with an aggregated subquery: it collects them into JSON, and Reylo types every field inside it:
+
+Postgres:
+
+```sql
+select u.id, u.name,
+  -- every post, as an array
+  (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'id', p.id,
+      'title', p.title
+    ) order by p.id), '[]')
+    from posts p
+    where p.user_id = u.id
+  ) as posts,
+  -- the latest post, or null
+  (
+    select jsonb_build_object('id', p.id, 'title', p.title)
+    from posts p
+    where p.user_id = u.id
+    order by p.published_at desc nulls last
+    limit 1
+  ) as latest_post
+from users u
+where u.id = :id::int
+```
+
+```ts
+// Params
+{ id: number }
+// Returns
+{
+  id: number;
+  name: string;
+  posts: { id: number; title: string }[];
+  latest_post: { id: number; title: string } | null;
+}[]
+```
+
+MySQL:
+
+```sql
+select u.id, u.name,
+  -- every post, as an array
+  (
+    select coalesce(json_arrayagg(json_object(
+      'id', p.id,
+      'title', p.title
+    )), json_array())
+    from posts p
+    where p.user_id = u.id
+  ) as posts,
+  -- the latest post, or null
+  (
+    select json_object('id', p.id, 'title', p.title)
+    from posts p
+    where p.user_id = u.id
+    order by p.published_at desc
+    limit 1
+  ) as latest_post
+from users u
+where u.id = :id::int
+```
+
+```ts
+// Params
+{ id: number }
+// Returns
+{
+  id: number;
+  name: string;
+  posts: { id: number; title: string }[];
+  latest_post: { id: number; title: string } | null;
+}[]
+```
+
+SQLite:
+
+```sql
+select u.id, u.name,
+  -- every post, as an array
+  (
+    select json_group_array(json_object(
+      'id', p.id,
+      'title', p.title
+    ))
+    from posts p
+    where p.user_id = u.id
+  ) as posts,
+  -- the latest post, or null
+  (
+    select json_object('id', p.id, 'title', p.title)
+    from posts p
+    where p.user_id = u.id
+    order by p.published_at desc nulls last
+    limit 1
+  ) as latest_post
+from users u
+where u.id = :id::int
+```
+
+```ts
+// Params
+{ id: number }
+// Returns
+{
+  id: number;
+  name: string;
+  posts: { id: number; title: string }[];
+  latest_post: { id: number; title: string } | null;
+}[]
+```
+
+### JSON Schema
+
+Declare a JSON Schema, and Reylo types the JSON it describes. A JSON column declares one in a check constraint:
+
+```sql
+-- Schema (Postgres)
+create extension if not exists pg_jsonschema;
+
+create table events (
+  id serial primary key,
+  payload jsonb not null check (jsonb_matches_schema('{
+    "type": "object",
+    "properties": {
+      "x": { "type": "integer" },
+      "y": { "type": "integer" }
+    },
+    "required": ["x", "y"],
+    "additionalProperties": false
+  }', payload))
+);
+```
+
+```sql
+-- Schema (MySQL)
+create table events (
+  id int auto_increment primary key,
+  payload json not null check (json_schema_valid('{
+    "type": "object",
+    "properties": {
+      "x": { "type": "integer" },
+      "y": { "type": "integer" }
+    },
+    "required": ["x", "y"],
+    "additionalProperties": false
+  }', payload))
+);
+```
+
+Postgres and MySQL:
+
+```sql
+select id, payload
+from events
+where id = :id::int
+```
+
+```ts
+// Params
+{ id: number }
+// Returns
+{ id: number; payload: { x: number; y: number } }[]
+```
+
+### JSON parameters
+
+A JSON parameter declares its schema in its cast to `json` or `jsonb`, and Reylo infers the parameter's type from it:
+
+```sql
+insert into events (kind, payload)
+values ('click', :payload::json('{
+  "type": "object",
+  "properties": {
+    "x": { "type": "integer" },
+    "y": { "type": "integer" },
+    "button": { "type": "string", "enum": ["left", "right"] }
+  },
+  "required": ["x", "y"]
+}'))
+```
+
+```ts
+// Params
+{ payload: { x: number; y: number; button?: "left" | "right" } }
+// Returns
+void
+```
+
+Reylo also checks the value against the schema when you call `.run()`:
+
+```ts
+import recordClick from "./record_click.sql";
+
+// type-checks, but .run() rejects it: x must be an integer
+await recordClick.run(db, { payload: { x: 1.5, y: 20 } });
+```
+
+A schema can nest objects and arrays, and check every value in them:
+
+```sql
+insert into events (kind, payload)
+values ('order', :order::json('{
+  "type": "object",
+  "properties": {
+    "customer": { "type": "string", "format": "email" },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "sku": { "type": "string", "pattern": "^[A-Z]{3}-[0-9]{4}$" },
+          "qty": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["sku", "qty"]
+      }
+    },
+    "shipping": { "enum": ["standard", "express"] }
+  },
+  "required": ["customer", "items"]
+}'))
+```
+
+```ts
+// Params
+{
+  order: {
+    customer: string;
+    items: { sku: string; qty: number }[];
+    shipping?: "standard" | "express";
+  };
+}
+// Returns
+void
+```
+
+A JSON parameter written to a schema-checked column takes that schema as its type, with no cast:
+
+```sql
+-- Schema
+create extension if not exists pg_jsonschema;
+
+create table events (
+  id serial primary key,
+  payload jsonb not null check (jsonb_matches_schema('{
+    "type": "object",
+    "properties": {
+      "x": { "type": "integer" },
+      "y": { "type": "integer" }
+    },
+    "required": ["x", "y"],
+    "additionalProperties": false
+  }', payload))
+);
+```
+
+Postgres:
+
+```sql
+insert into events (payload)
+values (:payload)
+```
+
+```ts
+// Params
+{ payload: { x: number; y: number } }
+// Returns
+void
+```
+
+### Filtering by a list
+
+Pass the list as one parameter:
+
+Postgres:
+
+```sql
+select id, name from users where id = any(:ids::int[])
+```
+
+```ts
+// Params
+{ ids: number[] }
+// Returns
+{ id: number; name: string }[]
+```
+
+MySQL:
+
+```sql
+-- MySQL has no array type, so the list is a JSON parameter
+with input as (
+  select :ids::json('{
+    "type": "array",
+    "items": { "type": "integer" }
+  }') as ids
+)
+select id, name from users
+where id in (
+  select j.id from input, json_table(input.ids, '$[*]' columns (
+    id int path '$'
+  )) as j
+)
+```
+
+```ts
+// Params
+{ ids: number[] }
+// Returns
+{ id: number; name: string }[]
+```
+
+SQLite:
+
+```sql
+-- SQLite has no array type, so the list is a JSON parameter
+with input as (
+  select :ids::json('{
+    "type": "array",
+    "items": { "type": "integer" }
+  }') as ids
+)
+select id, name from users
+where id in (select j.value from input, json_each(input.ids) as j)
+```
+
+```ts
+// Params
+{ ids: number[] }
+// Returns
+{ id: number; name: string }[]
+```
+
+### Bulk inserts
+
+Pass the rows as one [JSON parameter](https://reylo.dev/#typed-json): the schema in its cast types them, and Reylo checks every row before the statement runs:
+
+Postgres:
+
+```sql
+with input as (
+  select :users::jsonb('{
+    "type": "array",
+    "maxItems": 1000,
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": ["string", "null"], "format": "email" }
+      },
+      "required": ["name"]
+    }
+  }') as users
+)
+insert into users (name, email)
+select u.name, u.email
+from input, jsonb_to_recordset(input.users) as u(name text, email text)
+returning id
+```
+
+```ts
+// Params
+{ users: { name: string; email?: string | null }[] }
+// Returns
+{ id: number }[]
+```
+
+MySQL:
+
+```sql
+insert into users (name, email)
+with input as (
+  select :users::json('{
+    "type": "array",
+    "maxItems": 1000,
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": ["string", "null"], "format": "email" }
+      },
+      "required": ["name"]
+    }
+  }') as users
+)
+select u.name, u.email
+from input, json_table(input.users, '$[*]' columns (
+  name text path '$.name',
+  email varchar(255) path '$.email'
+)) as u
+```
+
+```ts
+// Params
+{ users: { name: string; email?: string | null }[] }
+// Returns
+void
+```
+
+SQLite:
+
+```sql
+with input as (
+  select :users::json('{
+    "type": "array",
+    "maxItems": 1000,
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": ["string", "null"], "format": "email" }
+      },
+      "required": ["name"]
+    }
+  }') as users
+)
+insert into users (name, email)
+select u.value ->> 'name', u.value ->> 'email'
+from input, json_each(input.users) as u
+returning id
+```
+
+```ts
+// Params
+{ users: { name: string; email?: string | null }[] }
+// Returns
+{ id: number }[]
+```
+
+### Nested inserts
+
+Users with their posts, in one parameter. The posts find their user by `email`, a unique key.
+
+**Postgres**
+
+Postgres writes both tables in one statement: a `with` inserts the users, and the statement inserts the posts:
+
+Postgres:
+
+```sql
+with input as (
+  select :users::jsonb('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "posts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "title": { "type": "string" } },
+            "required": ["title"]
+          }
+        }
+      },
+      "required": ["name", "email", "posts"]
+    }
+  }') as users
+),
+new_users as (
+  insert into users (name, email)
+  select u.name, u.email
+  from input, jsonb_to_recordset(input.users) as u(name text, email text)
+  returning id, email
+)
+insert into posts (user_id, title)
+select n.id, p.title
+from input
+cross join jsonb_to_recordset(input.users) as u(email text, posts jsonb)
+join new_users n on n.email = u.email
+cross join jsonb_to_recordset(u.posts) as p(title text)
+```
+
+```ts
+// Params
+{
+  users: {
+    name: string;
+    email: string;
+    posts: { title: string }[];
+  }[];
+}
+// Returns
+void
+```
+
+**MySQL**
+
+On MySQL, a `with` only reads, so the users and the posts are two statements, run in one transaction:
+
+`main.ts`:
+
+```ts
+import mysql from "mysql2/promise";
+import insertUsers, { type Params } from "./insert_users.sql";
+import insertPosts from "./insert_posts.sql";
+
+const db = mysql.createPool(process.env.DATABASE_URL);
+const users = [
+  {
+    name: "Ada",
+    email: "ada@example.com",
+    posts: [{ title: "Notes" }],
+  },
+];
+
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await insertUsers.run(conn, { users });
+  await insertPosts.run(conn, { users });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
+```
+
+`insert_users.sql`:
+
+```sql
+insert into users (name, email)
+with input as (
+  select :users::json('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" }
+      },
+      "required": ["name", "email"]
+    }
+  }') as users
+)
+select u.name, u.email
+from input, json_table(input.users, '$[*]' columns (
+  name text path '$.name',
+  email varchar(255) path '$.email'
+)) as u
+```
+
+`insert_posts.sql`:
+
+```sql
+insert into posts (user_id, title)
+with input as (
+  select :users::json('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "posts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "title": { "type": "string" } },
+            "required": ["title"]
+          }
+        }
+      },
+      "required": ["email", "posts"]
+    }
+  }') as users
+)
+select users.id, u.title
+from input, json_table(input.users, '$[*]' columns (
+  email varchar(255) path '$.email',
+  nested path '$.posts[*]' columns (title text path '$.title')
+)) as u
+join users on users.email = u.email
+where u.title is not null
+```
+
+**SQLite**
+
+On SQLite, a `with` only reads, so the users and the posts are two statements, run in one transaction:
+
+`main.ts`:
+
+```ts
+import Database from "better-sqlite3";
+import insertUsers, { type Params } from "./insert_users.sql";
+import insertPosts from "./insert_posts.sql";
+
+const db = new Database("app.db");
+const users = [
+  {
+    name: "Ada",
+    email: "ada@example.com",
+    posts: [{ title: "Notes" }],
+  },
+];
+
+db.transaction(() => {
+  insertUsers.runSync(db, { users });
+  insertPosts.runSync(db, { users });
+})();
+```
+
+`insert_users.sql`:
+
+```sql
+with input as (
+  select :users::json('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" }
+      },
+      "required": ["name", "email"]
+    }
+  }') as users
+)
+insert into users (name, email)
+select u.value ->> 'name', u.value ->> 'email'
+from input, json_each(input.users) as u
+```
+
+`insert_posts.sql`:
+
+```sql
+with input as (
+  select :users::json('{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "posts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "title": { "type": "string" } },
+            "required": ["title"]
+          }
+        }
+      },
+      "required": ["email", "posts"]
+    }
+  }') as users
+)
+insert into posts (user_id, title)
+select users.id, p.value ->> 'title'
+from input
+join json_each(input.users) as u
+join users on users.email = u.value ->> 'email'
+join json_each(u.value -> 'posts') as p
+```
+
+### Discriminated unions with `oneOf`
+
+A `oneOf` in a schema is a [union](https://reylo.dev/#unions). Give each member a key with one value, and it is a discriminated union, which TypeScript narrows on that key:
+
+```sql
+-- Schema (Postgres)
+create extension if not exists pg_jsonschema;
+
+create table events (
+  id serial primary key,
+  payload jsonb not null check (jsonb_matches_schema('{
+    "type": "object",
+    "oneOf": [{
+      "properties": {
+        "kind": { "const": "click" },
+        "x": { "type": "integer" },
+        "y": { "type": "integer" }
+      },
+      "required": ["kind", "x", "y"],
+      "additionalProperties": false
+    }, {
+      "properties": {
+        "kind": { "const": "key" },
+        "code": { "type": "string" }
+      },
+      "required": ["kind", "code"],
+      "additionalProperties": false
+    }]
+  }', payload))
+);
+```
+
+```sql
+-- Schema (MySQL)
+-- MySQL checks JSON Schema draft 4, which has no const
+create table events (
+  id int auto_increment primary key,
+  payload json not null check (json_schema_valid('{
+    "type": "object",
+    "oneOf": [{
+      "properties": {
+        "kind": { "enum": ["click"] },
+        "x": { "type": "integer" },
+        "y": { "type": "integer" }
+      },
+      "required": ["kind", "x", "y"],
+      "additionalProperties": false
+    }, {
+      "properties": {
+        "kind": { "enum": ["key"] },
+        "code": { "type": "string" }
+      },
+      "required": ["kind", "code"],
+      "additionalProperties": false
+    }]
+  }', payload))
+);
+```
+
+Postgres and MySQL:
+
+```sql
+select id, payload
+from events
+where id = :id::int
+```
+
+```ts
+// Params
+{ id: number }
+// Returns
+{
+  id: number;
+  payload: {
+    kind: "click";
+    x: number;
+    y: number;
+  } | { kind: "key"; code: string };
+}[]
+```
+
+A parameter's schema works the same way:
+
+Postgres:
+
+```sql
+with input as (
+  select :events::jsonb('{
+    "type": "array",
+    "items": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "click" },
+            "x": { "type": "integer" },
+            "y": { "type": "integer" }
+          },
+          "required": ["kind", "x", "y"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "key" },
+            "code": { "type": "string" }
+          },
+          "required": ["kind", "code"]
+        }
+      ]
+    }
+  }') as events
+)
+insert into events (kind, payload)
+select e.value ->> 'kind', e.value
+from input, jsonb_array_elements(input.events) as e(value)
+```
+
+```ts
+// Params
+{
+  events: ({
+    kind: "click";
+    x: number;
+    y: number;
+  } | { kind: "key"; code: string })[];
+}
+// Returns
+void
+```
+
+MySQL:
+
+```sql
+insert into events (kind, payload)
+with input as (
+  select :events::json('{
+    "type": "array",
+    "items": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "click" },
+            "x": { "type": "integer" },
+            "y": { "type": "integer" }
+          },
+          "required": ["kind", "x", "y"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "key" },
+            "code": { "type": "string" }
+          },
+          "required": ["kind", "code"]
+        }
+      ]
+    }
+  }') as events
+)
+select e.kind, e.payload
+from input, json_table(input.events, '$[*]' columns (
+  kind text path '$.kind',
+  payload json path '$'
+)) as e
+```
+
+```ts
+// Params
+{
+  events: ({
+    kind: "click";
+    x: number;
+    y: number;
+  } | { kind: "key"; code: string })[];
+}
+// Returns
+void
+```
+
+SQLite:
+
+```sql
+with input as (
+  select :events::json('{
+    "type": "array",
+    "items": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "click" },
+            "x": { "type": "integer" },
+            "y": { "type": "integer" }
+          },
+          "required": ["kind", "x", "y"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "key" },
+            "code": { "type": "string" }
+          },
+          "required": ["kind", "code"]
+        }
+      ]
+    }
+  }') as events
+)
+insert into events (kind, payload)
+select e.value ->> 'kind', e.value
+from input, json_each(input.events) as e
+```
+
+```ts
+// Params
+{
+  events: ({
+    kind: "click";
+    x: number;
+    y: number;
+  } | { kind: "key"; code: string })[];
+}
+// Returns
+void
+```
+
+## Configuration
+
+Configure Reylo in a `.reylo.yaml` (or `.reylo.yml`) file beside `package.json`. Every key is optional:
+
+`.reylo.yaml`:
+
+```yaml
+# the dev database Reylo reads your schema from (the default)
+direct_url: ${DATABASE_URL}
+# the .env files Reylo reads (the default)
+env: [.env.local, .env]
+# an error for a parameter whose type cannot be inferred (the default)
+strict_params: true
+# a comment naming each query's file, for your database's monitoring (the default)
+sqlcommenter: true
+```
+
+### `direct_url`
+
+The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:
+
+**Postgres**, `.env`:
+
+```sh
+# or postgresql://
+DATABASE_URL=postgres://localhost:5432/app
+```
+
+**MySQL**, `.env`:
+
+```sh
+# or mariadb://
+DATABASE_URL=mysql://root@localhost:3306/app
+```
+
+**SQLite**, `.env`:
+
+```sh
+# or sqlite:; the path starts at package.json
+DATABASE_URL=file:./app.db
+```
+
+Point it at a direct connection, not a pooler: describing a query through a pooler in transaction mode, such as PgBouncer's, can fail. You can interpolate other variables from your environment to construct a connection string.
+
+`.reylo.yaml`:
+
+```yaml
+# the default is ${DATABASE_URL}
+direct_url: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/app
+```
+
+To keep a password out of every file, `$(…)` runs a command, such as a password manager's or a cloud's token command, and puts what it prints in its place. Reylo runs it once per editor session or build, and again when the database refuses the login, as when a token expires.
+
+`.reylo.yaml`:
+
+```yaml
+# or $(aws rds generate-db-auth-token …) for a short-lived token
+direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
+```
+
+### `env`
+
+The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that sets a variable wins, and the environment wins over every file.
+
+`.reylo.yaml`:
+
+```yaml
+# the default is [.env.local, .env]
+env: [.env.development, .env]
+```
+
+### `strict_params`
+
+A [parameter whose type cannot be inferred](https://reylo.dev/#a-parameter-nothing-types) is an error that says to [cast it](https://reylo.dev/#casts). Set `strict_params: false` to type it `unknown` instead.
+
+`.reylo.yaml`:
+
+```yaml
+# the default is true
+strict_params: false
+```
+
+### `sqlcommenter`
+
+Each compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. Set `sqlcommenter: false` to leave it off.
+
+`.reylo.yaml`:
+
+```yaml
+# the default is true
+sqlcommenter: false
+```
+
+**What Postgres receives for queries/get_user.sql, by default**:
+
+```sql
+select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
+```
+
+## Errors
+
+An error in a query shows at its line and column, in your editor as you type and in `tsc`. TypeScript's own language server reports it, inside the `.sql` file itself, so Reylo needs no editor plugin. Your editor needs only:
+
+- **TypeScript 7.1** installed in your project ([Install](https://reylo.dev/#install))
+- **The TypeScript 7 extension**, pointed at your project's TypeScript ([Editor](https://reylo.dev/#editors)). Zed shows an error inside a `.sql` file only in `tsc`.
+
+Your database checks each query, so a misspelled column is the database's own error:
+
+`get_user.sql`:
+
+```sql
+select id, nmae, email
+from users
+where id = :id::int
+```
+
+```text
+Postgres: get_user.sql:1:12 - error reylo6: column "nmae" does not exist (42703)
+MySQL: get_user.sql:1:1 - error reylo6: Unknown column 'nmae' in 'field list' (ER_BAD_FIELD_ERROR)
+SQLite: get_user.sql:1:12 - error reylo6: no such column: nmae
+```
+
+**Postgres**
+
+Reylo checks its own syntax too, such as a [typed JSON](https://reylo.dev/#typed-json) parameter's schema:
+
+**MySQL**
+
+MySQL gives no position for this error, so it covers the whole statement. Reylo checks its own syntax too, such as a [typed JSON](https://reylo.dev/#typed-json) parameter's schema:
+
+**SQLite**
+
+Reylo checks its own syntax too, such as a [typed JSON](https://reylo.dev/#typed-json) parameter's schema:
+
+`record_click.sql`:
+
+```sql
+insert into events (kind, payload)
+values ('click', :payload::json('{ "type": object }'))
+```
+
+```text
+record_click.sql:2:33 - error reylo20: The schema in the cast of :payload is not JSON: expected value at line 1 column 11.
+```
+
+Two columns of one name are an error, since each row is an object and keeps only the last:
+
+`post_ids.sql`:
+
+```sql
+select u.id, p.id, p.title
+from users u
+join posts p on p.user_id = u.id
+```
+
+```text
+Postgres: post_ids.sql:1:16 - error reylo14: Columns 1 and 2 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+MySQL, SQLite: post_ids.sql:1:1 - error reylo14: Columns 1 and 2 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+```
+
+Sorting or grouping by a parameter is an error, since a parameter is a value and every row would sort the same. To let the caller choose the order, see [Dynamic sorting](https://reylo.dev/#dynamic-sorting):
+
+`list_users.sql`:
+
+```sql
+select id, name
+from users
+order by :sort::text
+```
+
+```text
+list_users.sql:3:10 - error reylo17: order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end
+```
+
+A [parameter whose type cannot be inferred](https://reylo.dev/#a-parameter-nothing-types) is Reylo's error too, which says to cast it. When a query changes, its types change with it, and code that reads a column the query no longer selects is an error:
+
+`main.ts`:
+
+```ts
+import listPosts from "./list_posts.sql";
+
+const posts = await listPosts.run(db);
+for (const post of posts) console.log(post.body);
+```
+
+`list_posts.sql`:
+
+```sql
+select id, title
+from posts
+order by id
+```
+
+A wrong argument is an error where you call `.run()`:
+
+```ts
+import getUser from "./get_user.sql";
+
+const user = await getUser.run(db, { id: "1" });
+```
+
+The type check reports the same errors:
+
+**Terminal**:
+
+```ansi
+$ tsc --noEmit --runExternalCode
+get_user.sql:1:12 - error reylo6: column "nmae" does not exist (42703)
+
+1 select id, nmae, email
+             ~~~~
+
+Found 1 error in get_user.sql:1
+```
+
+While a `.sql` file has an error, `tsc` holds back the TypeScript errors, so fix the SQL first.
+
+## Tracing
+
+To add observability (o11y) to your queries, subscribe to Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, where Reylo publishes every query it runs, and wrap each one in a span:
+
+```ts
+import { tracingChannel } from "node:diagnostics_channel";
+import type { QueryTrace } from "reylo";
+
+const queries = tracingChannel<QueryTrace & { span: Span }>("reylo:query");
+
+queries.subscribe({
+  start(ctx) {
+    ctx.span = tracer.startSpan("db.query", {
+      attributes: {
+        "db.query.summary": ctx.query.source,
+        "db.query.text": ctx.query.sql,
+      },
+    });
+  },
+  error(ctx) {
+    ctx.span.recordException(ctx.error);
+  },
+  end(ctx) {
+    if (ctx.sync) ctx.span.end();
+  },
+  asyncEnd(ctx) {
+    ctx.span.end();
+  },
+});
+```
+
+Each event carries the `query`, its `params`, the `client`, and then its `result` or `error`. Calls to `.runSync()` and `.trySync()` set `sync` and end on `end`; every other call ends on `asyncEnd`.
+
+The channel is there on Node, on Bun, and on Cloudflare Workers with the `nodejs_compat` flag. Elsewhere, queries run untraced.
+
+## FAQ
+
+**Does the type check run my queries?**
+
+No. Reylo has your database prepare each query, which checks it and describes its parameters and columns without running it, and reads the rest from the catalog. On SQLite, Reylo prepares the query in its own copy of SQLite, from the schema in your database file.
+
+**Does Reylo run migrations?**
+
+Not at the moment: bring your own. Reylo types your queries against whatever schema your dev database has, so apply your migrations with the tool you already use, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
+
+**How do I type-check in CI?**
+
+Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too.
+
+**What is the .reylo directory, and should I commit it?**
+
+It is Reylo's cache of each query's analysis. It has its own `.gitignore`, so git skips it: don't commit it.
+
+**Can I build without a database?**
+
+No, not yet: Reylo reads your types from a live database, so a type check or a build needs one.
+
+**Why are dates strings, and 64-bit integers bigints?**
+
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](https://reylo.dev/#data-types).
+
+**How do I add observability to my queries?**
+
+Reylo publishes every query it runs on Node's tracing channel `reylo:query`, so your tracer, logger or other o11y tool can wrap each one in a span. [Tracing](https://reylo.dev/#tracing) shows how.
+
+# Postgres
+
+> How Reylo types SQL queries on Postgres. The TypeScript type of each column, null values, row counts, parameters, drivers and limits.
+
+How Reylo types queries on Postgres
+
+[Reylo](https://reylo.dev/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on Postgres: column types, null values, row counts, parameters and drivers.
+
+| | |
+| --- | --- |
+| Postgres versions | 14 to 18 |
+| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](https://reylo.dev/#direct_url). Connect directly, not through a pooler such as PgBouncer. |
+| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](https://reylo.dev/postgres#drivers)) |
+| Type checking | Reads the schema through the postgres.js inside `@reylosql/postgres`, so your project needs no driver for it |
+
+**View the schema behind the examples**
+
+```sql
+create extension if not exists pg_jsonschema;
+
+create type user_role as enum ('admin', 'member');
+create domain amount as numeric(12, 2) check (value >= 0);
+
+create table users (
+  id serial primary key,
+  name text not null,
+  email text unique,
+  role user_role not null default 'member',
+  tags text[] not null default '{}',
+  created_at timestamptz not null default now()
+);
+create unique index users_email_lower on users (lower(email));
+```
+
+```sql
+create table orders (
+  id bigserial primary key,
+  user_id integer not null references users (id),
+  total amount not null,
+  paid boolean not null default false,
+  placed_at timestamptz not null default now(),
+  ships_on date,
+  receipt bytea
+);
+```
+
+```sql
+create table events (
+  id bigserial primary key,
+  kind text not null check (kind in ('click', 'key')),
+  payload jsonb not null check (jsonb_matches_schema('{
+    "type": "object",
+    "properties": {
+      "x": { "type": "integer" },
+      "y": { "type": "integer" },
+      "code": { "type": "string" }
+    }
+  }', payload)),
+  at timestamp not null default localtimestamp
+);
+```
+
+## Data types
+
+Each Postgres type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from what `Bun.sql` loses ([Drivers](https://reylo.dev/postgres#drivers)):
+
+| SQL type | TypeScript | The value `.run()` returns |
+| --- | --- | --- |
+| `smallint`, `integer`, `oid` | `number` | `42` |
+| `bigint`, `bigserial`, `count(*)` | `bigint` | `9007199254740993n` |
+| `real`, `double precision` | `number` | `1.1` |
+| `numeric`, `money` | `string` | `"12.50"`, `"$1.50"` |
+| `text`, `varchar`, `char`, `uuid` | `string` | `"Ada"` |
+| `boolean` | `boolean` | `true` |
+| `date` | `string` | `"2026-10-20"` |
+| `timestamp` | `string` | `"2026-10-20T10:00:00.123456"` |
+| `timestamptz` | `string` | `"2026-10-20T08:00:00.123456Z"` |
+| `time`, `timetz` | `string` | `"10:00:00"` |
+| `interval` | `string` | `"P1DT2H3M4S"` |
+| `json`, `jsonb` | `unknown` | `{ a: 1 }` |
+| `json`, `jsonb` a JSON Schema `CHECK` holds | what the schema admits | `{ x: 10, y: 20 }` |
+| JSON the statement builds (`jsonb_build_object`, `jsonb_agg`) | the object or array it builds | `{ total: 12.5 }` |
+| `bytea` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| An array | an array of its element type | `["math", "poetry"]` |
+| An enum | the union of its labels | `"admin"` |
+| A domain | its base type | its base type's |
+| A row value | `string` | `"(1,Ada)"` |
+| pgvector's `vector`, `halfvec` | `number[]` | `[1, 2.5, -3]` |
+| `hstore` | `Record<string, string \| null>` | `{ a: "1", b: null }` |
+| Every other type (`inet`, ranges, `point`, `tsvector`, `xml`, …) | `string` | `"[1,5)"` |
+
+Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
+
+### Integers
+
+A `bigint` comes back as a JavaScript `bigint`. So does `count(*)`, since Postgres types it `bigint`. To get a `number`, cast to `int` in the query:
+
+`main.ts`:
+
+```ts
+import countOrders from "./pg_count_orders.sql";
+
+const counts = await countOrders.run(db);
+```
+
+`pg_count_orders.sql`:
+
+```sql
+select count(*) as total, count(*)::int as total_number
+from orders
+```
+
+Postgres types a `sum()` by what it adds up: an `integer` column sums to a `bigint`, and a `bigint` or `numeric` column to a `numeric`, which comes back as a `string`:
+
+- `sum(2::integer)` → `2n`
+- `sum(2::bigint)` → `"2"`
+- `sum(2.5::numeric)` → `"2.5"`
+
+### Decimals
+
+A `numeric` comes back as its exact text, keeping the column's scale, and so does an `avg()`. A `money` comes back as text in the server's currency format:
+
+- `12.50::numeric` → `"12.50"`
+- `avg(2::integer)` → `"2.0000000000000000"`
+- `1.50::money` → `"$1.50"`
+
+### Dates and times
+
+No value comes back as a `Date`. A `timestamptz` is the instant in UTC, in ISO 8601 with a `Z`, and an `interval` is an ISO 8601 duration. The other types are the text Postgres writes, with a `T` between the date and the time of a `timestamp`:
+
+`main.ts`:
+
+```ts
+import orderDates from "./pg_order_dates.sql";
+
+const order = await orderDates.run(db, { id: 1 });
+```
+
+`pg_order_dates.sql`:
+
+```sql
+select placed_at, ships_on from orders where id = :id
+```
+
+If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()`, the date with `Temporal.PlainDate.from()` and an interval with `Temporal.Duration.from()`. You can pass each value back in as a parameter unchanged ([What a parameter takes](https://reylo.dev/postgres#what-a-parameter-takes)).
+
+**Fractions of a second**
+
+Fractions keep the server's precision, up to microseconds, without trailing zeros.
+
+- `'2026-10-20 10:00:00.123456+00'::timestamptz` → `"2026-10-20T10:00:00.123456Z"`
+- `'2026-10-20 10:00:00.5+00'::timestamptz` → `"2026-10-20T10:00:00.5Z"`
+- `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00Z"`
+
+**Infinity**
+
+Postgres's `infinity` and `-infinity` come back as those words, in every date and time type, so `Temporal` can't parse them.
+
+- `'infinity'::timestamptz` → `"infinity"`
+- `'-infinity'::date` → `"-infinity"`
+
+**Years past 9999 or before 1 AD**
+
+A `timestamptz` uses ISO 8601's extended year, as `Temporal.Instant` does. A `date` or `timestamp` keeps Postgres's own text.
+
+- `'12344-12-31 18:30:00+00'::timestamptz` → `"+012344-12-31T18:30:00Z"`
+- `'0002-06-01 12:00:00+00 BC'::timestamptz` → `"-000001-06-01T12:00:00Z"`
+- `'0002-06-01 BC'::date` → `"0002-06-01 BC"`
+
+**Times**
+
+A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If your session changes it, the text changes too.
+
+- `'10:00:00+02'::timetz` → `"10:00:00+02"`
+
+**Intervals**
+
+An interval is an ISO 8601 duration with its sign in front, which `Temporal.Duration.from()` reads. Postgres signs an interval's months, days and time separately, so when those differ in sign, each part keeps its own sign: Postgres reads that form back, and `Temporal` doesn't. This holds in Postgres's default `IntervalStyle`; if your session changes it, the text is Postgres's own.
+
+- `'1 day 02:03:04'::interval` → `"P1DT2H3M4S"`
+- `'1 year 2 mons'::interval` → `"P1Y2M"`
+- `'-1 day'::interval` → `"-P1D"`
+- `'1 mon -1 day'::interval` → `"P1M-1D"`
+
+### JSON
+
+A `json` or `jsonb` column is typed `unknown`, unless a JSON Schema `CHECK` constrains it or your query builds the JSON. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
+
+`main.ts`:
+
+```ts
+import events from "./pg_events.sql";
+
+const rows = await events.run(db);
+```
+
+`pg_events.sql`:
+
+```sql
+select kind, payload from events
+```
+
+JSON your query builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg`, or `to_jsonb` of a whole row, is typed from what you put in it:
+
+`main.ts`:
+
+```ts
+import orderSummaries from "./pg_order_summaries.sql";
+
+const rows = await orderSummaries.run(db);
+```
+
+`pg_order_summaries.sql`:
+
+```sql
+select u.name,
+  jsonb_build_object(
+    'total', o.total,
+    'placed_at', o.placed_at,
+    'paid', o.paid
+  ) as summary
+from orders o
+join users u on u.id = o.user_id
+```
+
+A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
+
+`main.ts`:
+
+```ts
+import eventsByKind from "./pg_events_by_kind.sql";
+
+const groups = await eventsByKind.run(db);
+```
+
+`pg_events_by_kind.sql`:
+
+```sql
+select kind, jsonb_agg(payload order by id) as payloads
+from events
+group by kind
+```
+
+`main.ts`:
+
+```ts
+import userRow from "./pg_user_row.sql";
+
+const row = await userRow.run(db, { id: 1 });
+```
+
+`pg_user_row.sql`:
+
+```sql
+select to_jsonb(u) as "user" from users u where u.id = :id::int
+```
+
+**Values inside a document**
+
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
+
+- `jsonb_build_object('n', 9007199254740993::bigint)` → `{ n: 9007199254740992 }`
+- `jsonb_build_object('n', 12.50::numeric)` → `{ n: 12.5 }`
+- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
+- `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
+- `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
+- `jsonb_build_object('d', '1 day 02:03:04'::interval)` → `{ d: "1 day 02:03:04" }`
+- `json_build_object('u', row(1, 'Ada'))` → `{ u: { f1: 1, f2: "Ada" } }`
+- `json_build_object('o', 7::oid)` → `{ o: "7" }`
+- `json_build_object('g', 'POINT(1 2)'::geometry)` → `{ g: { type: "Point", coordinates: [1, 2] } }`
+- `json_build_object('v', '[1,2.5]'::vector)` → `{ v: "[1,2.5]" }`
+
+**Aggregates beside columns**
+
+Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `unknown` values.
+
+```sql
+select jsonb_build_object('name', u.name, 'orders', count(o.id)) as summary
+from users u
+left join orders o on o.user_id = u.id
+group by u.id
+```
+
+**Aggregates over no rows**
+
+Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `coalesce(jsonb_agg(…), '[]')` to always get an array. With any other default, the column is `unknown`.
+
+- `jsonb_agg(1) filter (where false)` → `null`
+- `coalesce(jsonb_agg(1) filter (where false), '[]')` → `[]`
+
+**Where a schema's type applies**
+
+A JSON Schema `CHECK`'s type reaches the column wherever you use it as it is: selected directly or through a view or subquery, inside JSON you build, in a whole row, and as a parameter written to the column.
+
+```sql
+insert into events (kind, payload)
+values (:kind, :payload)
+returning id
+```
+
+**Keys read from the column**
+
+A key read with `->`, `->>`, `#>` or `#>>` and a literal key is typed by the schema, and is non-null where the schema requires the key:
+
+```sql
+create extension if not exists pg_jsonschema;
+
+create table events (
+  id bigserial primary key,
+  payload jsonb not null check (jsonb_matches_schema('{
+    "type": "object",
+    "properties": {
+      "kind": { "enum": ["click", "key"] },
+      "x": { "type": "integer" }
+    },
+    "required": ["kind"]
+  }', payload))
+);
+```
+
+```sql
+select payload ->> 'kind' as kind, payload -> 'x' as x
+from events
+```
+
+**Where it doesn't**
+
+Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `unknown`.
+
+```sql
+select payload || '{"seen": true}' as merged, to_jsonb(kind) as k
+from events
+```
+
+**Through a `with` query or a subquery**
+
+JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `unknown`.
+
+```sql
+with totals as (
+  select user_id, jsonb_agg(total) as totals
+  from orders
+  group by user_id
+)
+select u.name, t.totals
+from users u
+join totals t on t.user_id = u.id
+```
+
+**Through a `case`**
+
+A `case` whose one branch builds JSON and whose other branches are `null` keeps that branch's type, and is nullable.
+
+```sql
+select case when total > 100
+  then jsonb_build_object('id', id)
+end as big_order
+from orders
+```
+
+The JSON Schema validators Reylo reads are pg_jsonschema's `jsonb_matches_schema` and `json_matches_schema`, and those of `jsonschema`, `postgres-json-schema`, `is_jsonb_valid` and `json_schema_validate`, each by the keywords and draft it enforces.
+
+### Arrays
+
+An array comes back as a JavaScript array of its element type, including arrays of enums and domains:
+
+`main.ts`:
+
+```ts
+import orderIds from "./pg_order_ids.sql";
+
+const rows = await orderIds.run(db);
+```
+
+`pg_order_ids.sql`:
+
+```sql
+select u.name, u.tags, array_agg(o.id) as order_ids
+from users u
+left join orders o on o.user_id = u.id
+group by u.id
+```
+
+**`NULL` elements**
+
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`.
+
+- `'{a,NULL}'::text[]` → `[ "a", null ]`
+
+**Several dimensions**
+
+Postgres doesn't track an array's dimensions, so a two-dimensional `int[]` is still typed `(number | null)[]`, though it comes back as nested arrays.
+
+- `'{{1,2},{3,4}}'::int[]` → `[ [ 1, 2 ], [ 3, 4 ] ]`
+
+**pgvector's vectors**
+
+A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either takes one; `NaN`, infinities and an empty array are rejected before the query runs. A `halfvec` keeps half-precision floats, so a value comes back as the float it stored, and a `sparsevec` comes back as its text.
+
+- `'[1,2.5,-3]'::vector` → `[ 1, 2.5, -3 ]`
+- `'[0.1,2]'::halfvec` → `[ 0.099975586, 2 ]`
+- `'{1:1.5,3:2}/4'::sparsevec` → `"{1:1.5,3:2}/4"`
+
+### Enums and domains
+
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`). A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+
+- `'{admin,member}'::user_role[]` → `[ "admin", "member" ]`
+
+A domain over `jsonb` with a JSON Schema `CHECK` is typed by its schema. A `CHECK` added `NOT VALID` is ignored, since older rows may break it.
+
+## Nullability
+
+Every column is typed `| null` unless Reylo can tell it never is null. On Postgres, it reads your schema and the query:
+
+**`NOT NULL` columns**
+
+A table's column is non-null if it has a valid `NOT NULL` constraint, including in every table that inherits from it.
+
+```sql
+select name, email
+from users
+```
+
+**Outer joins**
+
+An outer join makes the joined table's columns nullable: the right side of a `left join`, the left side of a `right join`, and both sides of a `full join`. A table joined to itself is told apart by its alias.
+
+```sql
+select u.name, o.total
+from users u
+left join orders o on o.user_id = u.id
+```
+
+**Tests that rule out `NULL`**
+
+A test that fails on `NULL`, in the `where` or a later inner join's `on`, makes its column non-null. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again.
+
+```sql
+select u.name, o.total, o.ships_on
+from users u
+left join orders o on o.user_id = u.id
+where o.paid
+```
+
+**Expressions**
+
+Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is.
+
+```sql
+select name || '!' as shout,
+  upper(email) as upper_email,
+  coalesce(email, '') as email_or_empty,
+  email is null as no_email
+from users
+```
+
+**Aggregates**
+
+Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max` and `sum` are non-null when their argument is, and a `filter` keeps an aggregate nullable.
+
+```sql
+select user_id,
+  array_agg(id) as order_ids,
+  max(ships_on) as last_ships_on,
+  sum(total) filter (where paid) as paid_total
+from orders
+group by user_id
+```
+
+**Subqueries**
+
+A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query.
+
+```sql
+select (select count(*) from orders) as orders,
+  (select name from users order by id limit 1) as first_name
+```
+
+**Window functions**
+
+A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
+
+```sql
+select id,
+  lag(placed_at) over (order by placed_at) as previous,
+  row_number() over (order by placed_at) as n,
+  sum(total) over (order by placed_at) as running_total
+from orders
+```
+
+**`union`**
+
+A `union` column is non-null when it's non-null in every branch.
+
+```sql
+select name as label, email as contact from users
+union all
+select 'guest', null
+```
+
+**Whole rows**
+
+A whole row is non-null unless an outer join can null it, and keeps each column's type. Turned into JSON, an outer-joined row's fields keep their own nullability.
+
+```sql
+select to_jsonb(o) as "order"
+from orders o
+```
+
+Your own operators, functions and casts, or an extension's, tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
+
+## Cardinality
+
+Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+
+| `.run()` returns | `cardinality` | When the query |
+| --- | --- | --- |
+| `Row` | `one` | is an aggregate without a `group by`, or inserts one row with `values (…)` and has `returning`, an `on conflict do update` included |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `on conflict do nothing` and `returning` |
+| `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
+| `Row[]` | `many` | is anything else |
+
+**Unique keys**
+
+A query that compares every column of a primary key or unique index with `=` returns one row or `null`. A unique index on an expression counts when the query compares the same expression, written as Postgres stores it in the index, cast included.
+
+```sql
+select id, name
+from users
+where lower(email) = lower(:email)
+```
+
+**Partial unique indexes**
+
+A partial unique index counts only when the `where` includes its condition.
+
+```sql
+create table slugs (
+  id serial primary key,
+  slug text not null,
+  deleted boolean not null default false
+);
+create unique index on slugs (slug) where not deleted;
+```
+
+```sql
+select id
+from slugs
+where slug = :slug and not deleted
+```
+
+**Subqueries, `with` queries and views**
+
+A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns.
+
+```sql
+select id, total
+from (
+  select o.id, o.total, u.name
+  from orders o
+  join users u on u.id = o.user_id
+  where o.paid
+) paid_orders
+where id = :id::bigint
+```
+
+A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast leaves no key.
+
+**What doesn't count**
+
+Part of a composite key doesn't count, and neither does a `having` or an `insert … select … returning`.
+
+```sql
+insert into orders (user_id, total)
+select id, 0 from users
+returning id
+```
+
+## Parameters
+
+### Placeholders
+
+Write parameters as `:name`, and pass `.run()` an object with those names. You can use Postgres's `$1` instead, but not both in one query; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
+
+### What a parameter takes
+
+A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query:
+
+| SQL type | A parameter takes |
+| --- | --- |
+| `smallint`, `integer` | `number` |
+| `bigint`, `limit`, `offset` | `number`, `bigint` or a string of digits |
+| `numeric` | `string` |
+| `boolean` | `boolean` |
+| `date`, `timestamp`, `time` | `string` |
+| `timestamptz` | a `string` that names its zone |
+| `interval` | a `string`: an ISO 8601 duration (`-P1D` too) or Postgres's own text |
+| `json`, `jsonb` | any JSON value, or what the column's JSON Schema admits |
+| `bytea` | `Uint8Array` |
+| An array | an array of its element's parameter type, without `null` |
+| An enum | the union of its labels |
+| pgvector's `vector`, `halfvec` | `number[]` |
+| `hstore` | an object whose values are strings or `null` |
+
+**Dates and times**
+
+A date or time parameter takes text, never a `Date`, since drivers convert a `Date` in different time zones. A `timestamptz` needs a zone in its text, as `.run()` returns it, so pass a `Date` as `date.toISOString()`:
+
+`main.ts`:
+
+```ts
+import ordersSince from "./pg_orders_since.sql";
+
+await ordersSince.run(db, { since: "2026-10-12T19:06:48Z" });
+await ordersSince.run(db, { since: new Date().toISOString() });
+// rejected before the query runs: the text names no zone
+await ordersSince.run(db, { since: "2026-10-12 19:06:48" });
+```
+
+`pg_orders_since.sql`:
+
+```sql
+select id from orders where placed_at > :since
+```
+
+**JSON text**
+
+A JSON parameter is sent as JSON, so a string is stored as a JSON string. To pass JSON text you already have, cast it from text:
+
+`main.ts`:
+
+```ts
+import addEvent from "./pg_add_event_text.sql";
+
+// stored as the object {"x": 1}
+await addEvent.run(db, { payload: '{"x": 1}' });
+```
+
+`pg_add_event_text.sql`:
+
+```sql
+insert into events (kind, payload)
+values ('click', :payload::text::jsonb)
+```
+
+A `bytea` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since each driver would store a string differently. Decode the text into a `Uint8Array` first.
+
+### Parameters that may be null
+
+A parameter accepts `null` in two places. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
+
+**Cast to `nullable(…)`**
+
+A cast to `nullable(type)` makes the parameter that type or `null`.
+
+```sql
+select id, name
+from users
+where role = coalesce(:role::nullable(user_role), role)
+```
+
+**Written to a nullable column**
+
+Written directly into a column that accepts `NULL`, with no cast. A column accepts it unless it's `NOT NULL`, its domain is `not null`, or a `check (… is not null)` covers it.
+
+```sql
+insert into orders (user_id, total, ships_on)
+values (:user_id, :total, :ships_on)
+```
+
+Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:role is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
+
+## Database errors
+
+With [`.try()`](https://reylo.dev/#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The SQLSTATE, as `"23505"`: one of the 251 that Postgres defines, or one a function raises itself (`raise ... using errcode = 'U0001'`) |
+| `condition` | The code's name, as `"unique_violation"`, or `undefined` for a code Postgres doesn't define |
+| `severity` | `ERROR`, or `FATAL` when the session ended |
+| `message`, `detail`, `hint` | The server's texts |
+| `position` | Where in the statement the error is, as a character's place from 1 |
+| `where` | The functions the error was raised in |
+| `schema`, `table`, `column`, `dataType`, `constraint` | What the error is about: a unique violation's constraint and table, a not-null violation's column, a domain's type |
+
+Since a function may raise any code, TypeScript takes any string for `code`. Compare `condition` to have it catch a misspelled name.
+
+When nothing the query sets off is code a user or an extension wrote (no trigger or rule on a table it writes, and no default, check, policy, view, operator class, operator or function that calls such code, nor a function such as `query_to_xml()` that runs SQL it is given), its error type is narrowed: `code` is one Postgres defines, and a unique, not-null, foreign key, check or exclusion violation names only the constraints, tables, columns and domains the query writes through, its partitions and the tables its foreign keys' actions reach included.
+
+An error inside a transaction aborts it, even when `.try()` returns the error: every later statement fails with `in_failed_sql_transaction`, and a commit rolls back without an error. With postgres.js, `sql.begin()` and `tx.savepoint()` reject with any error a statement in them raised, including one `.try()` returned. To carry on after an error, run the statement in a savepoint and roll back to it: with pg, `savepoint s` before it and `rollback to savepoint s` when it fails; with postgres.js, `.run()` inside `tx.savepoint()`, catching the error it rejects with.
+
+## Drivers
+
+Reylo decodes its query results itself, so type parsers and transforms you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.
+
+Each example below runs this query:
+
+```sql
+select id, name, email from users where id = :id
+```
+
+### `pg`
+
+Pass a `Pool`, a connected `Client`, or a client taken from the pool, which can run a transaction:
+
+`main.ts`:
+
+```ts
+import pg from "pg";
+import getUser from "./pg_get_user.sql";
+
+const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const user = await getUser.run(db, { id: 1 });
+
+const client = await db.connect();
+await client.query("begin");
+await getUser.run(client, { id: 1 });
+await client.query("commit");
+client.release();
+```
+
+A client created with `binary: true` isn't supported.
+
+### postgres.js
+
+Pass the `sql` function, or a transaction, savepoint or reserved connection taken from it:
+
+`main.ts`:
+
+```ts
+import postgres from "postgres";
+import getUser from "./pg_get_user.sql";
+
+const db = postgres(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+await db.begin(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.savepoint((sp) => getUser.run(sp, { id: 1 }));
+});
+
+const reserved = await db.reserve();
+await getUser.run(reserved, { id: 1 });
+reserved.release();
+```
+
+Reylo prepares its queries on each connection, as postgres.js prepares its own. Behind a pooler in transaction mode, such as PgBouncer's, create the client with `prepare: false`, and Reylo's queries run unprepared too. A client created with `transform.row` isn't supported.
+
+### `pg-promise`
+
+Pass the database object, or the context a task or transaction hands its callback:
+
+`main.ts`:
+
+```ts
+import pgPromise from "pg-promise";
+import getUser from "./pg_get_user.sql";
+
+const pgp = pgPromise();
+const db = pgp(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+await db.task((t) => getUser.run(t, { id: 1 }));
+await db.tx(async (t) => {
+  await getUser.run(t, { id: 1 });
+  await t.tx((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
+A `receive` event that rewrites results isn't supported.
+
+### `slonik`
+
+Pass the pool, or the connection or transaction a callback is handed:
+
+`main.ts`:
+
+```ts
+import { createPool } from "slonik";
+import getUser from "./pg_get_user.sql";
+
+const db = await createPool(process.env.DATABASE_URL!);
+const user = await getUser.run(db, { id: 1 });
+
+await db.connect((connection) => getUser.run(connection, { id: 1 }));
+await db.transaction(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
+Reylo's queries get their own values whatever type parsers the pool was created with, and the pool's other queries keep them. This needs Slonik 49.12.0 or later, whose `sql` tag takes type parsers per query. Reylo makes that tag with the app's own `slonik`, loaded at run time from its `node_modules`, so a server that is bundled keeps `slonik` external. An interceptor with a `transformRow` or `transformRowAsync`, which renames or rewrites rows, isn't supported: Reylo refuses the client before the query runs.
+
+### `Bun.sql`
+
+Pass the client, or a transaction, savepoint or reserved connection taken from it:
+
+`main.ts`:
+
+```ts
+import { SQL } from "bun";
+import getUser from "./pg_get_user.sql";
+
+const db = new SQL(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+await db.begin(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.savepoint((sp) => getUser.run(sp, { id: 1 }));
+});
+
+const reserved = await db.reserve();
+await getUser.run(reserved, { id: 1 });
+reserved.release();
+```
+
+Bun loses the microseconds of a `timestamp` or `timestamptz` before Reylo sees them, and a date before 1 AD, which Reylo rejects. Queries with parameters are read in binary and others as text, so a `real` comes back exact (`1.100000023841858`) only with a parameter. Bun itself fails with "Failed to read data" on a `NULL` in an `int4[]` or `float4[]`, a two-dimensional `int[]` in a query with a parameter, and an array with explicit bounds in one without.
+
+### PGlite
+
+Pass the database, or the transaction it hands its callback:
+
+`main.ts`:
+
+```ts
+import { PGlite } from "@electric-sql/pglite";
+import getUser from "./pg_get_user.sql";
+
+const db = new PGlite("./pgdata");
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+### Neon
+
+Pass the `neon()` function, which sends each query over HTTP, or a `Pool` or `Client`, which hold a WebSocket and run transactions:
+
+`main.ts`:
+
+```ts
+import { neon, Pool } from "@neondatabase/serverless";
+import getUser from "./pg_get_user.sql";
+
+const sql = neon(process.env.DATABASE_URL);
+const user = await getUser.run(sql, { id: 1 });
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const client = await pool.connect();
+await client.query("begin");
+await getUser.run(client, { id: 1 });
+await client.query("commit");
+client.release();
+```
+
+### `@vercel/postgres`
+
+Pass its `sql` client:
+
+`main.ts`:
+
+```ts
+import { sql } from "@vercel/postgres";
+import getUser from "./pg_get_user.sql";
+
+const user = await getUser.run(sql, { id: 1 });
+```
+
+The package is deprecated on npm: Reylo's types accept its client, but Reylo's tests don't run it.
+
+### Drizzle
+
+Pass a Drizzle database over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, or a transaction or savepoint taken from it. Over Neon's HTTP driver, Drizzle has no transactions:
+
+`main.ts`:
+
+```ts
+import { drizzle } from "drizzle-orm/node-postgres";
+import getUser from "./pg_get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
+## Limits
+
+What Reylo can't type on Postgres, and what to do instead:
+
+| Limit | Instead |
+| --- | --- |
+| A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
+| An array's dimensions, and whether its elements are `null` | Keep arrays one-dimensional, and remove `null` elements before passing an array back in |
+| A row value outside JSON, which comes back as text | Select its fields as columns, or build an object with `to_jsonb` |
+| A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
+| A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
+| `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |
+| A file of several statements, such as a migration | Put each statement in a file of its own |
+| A float or `cube` on Supabase, whose Postgres prints floats rounded (`extra_float_digits = 0`), so `0.1::float8 + 0.2` comes back `0.3` | Run `alter role postgres set extra_float_digits = 1` once; the role's later connections read exact values |
+
+# MySQL
+
+> How Reylo types SQL queries on MySQL. The TypeScript type of each column, null values, row counts, parameters, drivers and limits.
+
+How Reylo types queries on MySQL
+
+[Reylo](https://reylo.dev/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on MySQL: column types, null values, row counts, parameters and drivers.
+
+| | |
+| --- | --- |
+| MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
+| Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](https://reylo.dev/#direct_url) |
+| Drivers | `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` or PlanetScale ([Drivers](https://reylo.dev/mysql#drivers)) |
+| Type checking | Reads the schema through the `mysql2` inside `@reylosql/mysql`, so your project needs no driver for it |
+
+**View the schema behind the examples**
+
+```sql
+create table users (
+  id int auto_increment primary key,
+  name varchar(100) not null,
+  email varchar(255) unique,
+  role enum('admin', 'member') not null default 'member',
+  active boolean not null default true,
+  created_at datetime(3) not null default (utc_timestamp(3))
+);
+```
+
+```sql
+create table orders (
+  id bigint auto_increment primary key,
+  user_id int not null,
+  total decimal(12, 2) not null,
+  placed_at datetime(6) not null default (utc_timestamp(6)),
+  ships_on date,
+  receipt blob,
+  foreign key (user_id) references users (id)
+);
+```
+
+```sql
+create table events (
+  id int auto_increment primary key,
+  kind varchar(10) not null,
+  payload json not null check (json_schema_valid('{
+    "type": "object",
+    "properties": {
+      "x": { "type": "integer" },
+      "code": { "type": "string" }
+    },
+    "required": ["x"]
+  }', payload))
+);
+```
+
+## Data types
+
+Each MySQL type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from a `FLOAT`'s last digits ([Decimals](https://reylo.dev/mysql#decimals)) and what `Bun.sql` loses ([Drivers](https://reylo.dev/mysql#drivers)):
+
+| SQL type | TypeScript | The value `.run()` returns |
+| --- | --- | --- |
+| `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `YEAR` | `number` | `2026` |
+| `BIGINT`, `BIGINT UNSIGNED`, `COUNT(*)` | `bigint` | `9007199254740993n` |
+| `BOOLEAN` (a `TINYINT(1)`), `BIT(1)` | `boolean` | `true` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `EXISTS`, `NOT`, `AND`, `OR` | `boolean` | `false` |
+| `DECIMAL`, `SUM(…)`, `AVG(…)`, `/` | `string` | `"12.50"` |
+| `FLOAT`, `DOUBLE` | `number` | `1.1` |
+| `CHAR`, `VARCHAR`, `TEXT` | `string` | `"Ada"` |
+| `ENUM` | `string`, not a union of its labels | `"member"` |
+| `SET` | `string` | `"a,c"` |
+| `DATE` | `string` | `"2026-10-20"` |
+| `DATETIME`, `TIMESTAMP` | `string` | `"2026-10-20T10:00:00.123"` |
+| `TIME` | `string` | `"10:00:00"` |
+| `JSON` | `unknown` | `{ a: 1 }` |
+| `JSON` a JSON Schema `CHECK` holds | what the schema admits | `{ x: 10 }` |
+| `json_object(…)`, `json_arrayagg(…)` | the object or array it builds | `{ total: 12.5 }` |
+| `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| `GEOMETRY` | `unknown` | its bytes, a `Uint8Array` |
+| `VECTOR` | `number[]` | `[1, 2.5, -3]` |
+
+Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
+
+### Integers
+
+A `BIGINT`, signed or unsigned, comes back as a JavaScript `bigint`. So do `COUNT(*)` and most integer expressions, such as `id + 1` and `length(name)`, since MySQL computes them as `BIGINT`. To get a `number`, cast to `double`:
+
+`main.ts`:
+
+```ts
+import countOrders from "./my_count_orders.sql";
+
+const counts = await countOrders.run(db);
+```
+
+`my_count_orders.sql`:
+
+```sql
+select count(*) as total, cast(count(*) as double) as total_number
+from orders
+```
+
+When an expression's type depends on the value you pass, it's typed as every type it could be. For example, `:n + 1` is `bigint | number | string`, since MySQL may compute it as a `BIGINT`, a `DOUBLE` or a `DECIMAL`.
+
+- `CAST(1 AS SIGNED) + 1` → `2n`
+- `CAST(1.5 AS DOUBLE) + 1` → `2.5`
+- `CAST(1.5 AS DECIMAL(2,1)) + 1` → `"2.5"`
+
+### Decimals
+
+A `DECIMAL` comes back as its exact text, keeping the column's scale. So do `SUM(…)`, `AVG(…)` and division, since MySQL computes them as `DECIMAL`: `sum(total)` returns `"19.75"`, and `id / 2` returns `"0.5000"`.
+
+A `FLOAT` is a 32-bit float. On `mysql2` it comes back as its exact value; `mariadb`, PlanetScale, and `Bun.sql` in a query without parameters, round it to its shorter text, `1.1`. A `DOUBLE` is the same on every driver.
+
+- `CAST(1.1 AS FLOAT)` → `1.100000023841858`
+- `CAST(1.1 AS DOUBLE)` → `1.1`
+
+### Dates and times
+
+No value comes back as a `Date`. Each is the text MySQL writes, with a `T` between the date and the time, and as many fraction digits as the column keeps:
+
+`main.ts`:
+
+```ts
+import orderDates from "./my_order_dates.sql";
+
+const order = await orderDates.run(db, { id: 1 });
+```
+
+`my_order_dates.sql`:
+
+```sql
+select placed_at, ships_on from orders where id = :id
+```
+
+If your runtime has `Temporal`, read the value with `Temporal.PlainDateTime.from()`.
+
+**Fractions of a second**
+
+A value has as many fraction digits as its type: a `DATETIME(3)` always has three, even when they're zero, and a `DATETIME` has none.
+
+- `CAST('2026-10-20 10:00:00.123456' AS DATETIME(6))` → `"2026-10-20T10:00:00.123456"`
+- `CAST('2026-10-20 10:00:00' AS DATETIME(3))` → `"2026-10-20T10:00:00.000"`
+- `CAST('2026-10-20 10:00:00' AS DATETIME)` → `"2026-10-20T10:00:00"`
+
+**A `TIMESTAMP`'s zone**
+
+MySQL returns a `TIMESTAMP` in the session's `time_zone`, which Reylo can't know, so the text has no zone. To read UTC, run `set time_zone = '+00:00'` on the connection, or store UTC in a `DATETIME` with `utc_timestamp()`, as the schema above does.
+
+### Truth values
+
+MySQL has no boolean type: a `BOOLEAN` column is a `TINYINT(1)`, and a comparison returns 1 or 0. Reylo types `TINYINT(1)` and `BIT(1)` columns as `boolean`, and every comparison your query makes:
+
+`main.ts`:
+
+```ts
+import userFlags from "./my_user_flags.sql";
+
+const rows = await userFlags.run(db);
+```
+
+`my_user_flags.sql`:
+
+```sql
+select id, active, role = 'admin' as is_admin from users
+```
+
+**What counts**
+
+These are typed `boolean`: comparisons, `IS`, `IN`, `BETWEEN`, `LIKE`, `REGEXP`, `EXISTS`, `NOT`, `AND`, `OR`, `XOR`, `TRUE` and `FALSE`, and a `CASE`, `IF`, `COALESCE`, `IFNULL`, `NULLIF` or subquery whose every value is one of them.
+
+- `'Ada' LIKE 'B%'` → `false`
+- `IF(1 = 1, TRUE, FALSE)` → `true`
+
+**Where MySQL hides the column**
+
+A boolean column stays `boolean` through a subquery in `from` or a `with` query. It becomes a number where MySQL hides the column: through a view, in `max(active)` or `active + 0`, and in a comparison made inside a subquery.
+
+- `TRUE + 0` → `1n`
+- `max(1 = 1)` → `1n`
+- `(SELECT b FROM (SELECT 1 = 1 AS b) d)` → `1n`
+
+**Values other than 0 and 1**
+
+A `TINYINT(1)` can hold any number from −128 to 127. Reylo reads 0 and 1 as `false` and `true`, and throws an error naming the column for any other value. Store only 0 or 1, or read the number with `active + 0`.
+
+### JSON
+
+A `JSON` column is typed `unknown`, unless a `JSON_SCHEMA_VALID` `CHECK` constrains it and your query selects it straight from its table, or your query builds the JSON:
+
+`main.ts`:
+
+```ts
+import events from "./my_events.sql";
+
+const rows = await events.run(db);
+```
+
+`my_events.sql`:
+
+```sql
+select kind, payload from events
+```
+
+JSON your query builds with `json_object` and `json_arrayagg` is typed from what you put in it:
+
+`main.ts`:
+
+```ts
+import orderSummaries from "./my_order_summaries.sql";
+
+const rows = await orderSummaries.run(db);
+```
+
+`my_order_summaries.sql`:
+
+```sql
+select u.name,
+  json_object('total', o.total, 'placed_at', o.placed_at) as summary
+from orders o
+join users u on u.id = o.user_id
+```
+
+A schema's type carries through `json_arrayagg`:
+
+`main.ts`:
+
+```ts
+import eventsByKind from "./my_events_by_kind.sql";
+
+const groups = await eventsByKind.run(db);
+```
+
+`my_events_by_kind.sql`:
+
+```sql
+select kind, json_arrayagg(payload) as payloads
+from events
+group by kind
+```
+
+**Values inside a document**
+
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a `DATETIME` is MySQL's text, and a boolean may be `true` or `1`, depending on how MySQL writes it.
+
+- `CAST('{"n": 9007199254740993}' AS JSON)` → `{ n: 9007199254740992 }`
+- `json_object('at', CAST('2026-10-20 10:00:00' AS DATETIME))` → `{ at: "2026-10-20 10:00:00.000000" }`
+- `json_object('b', 1 = 1)` → `{ b: true }`
+- `json_object('b', max(1 = 1))` → `{ b: 1 }`
+
+**Where a schema's type applies**
+
+A schema's type reaches the column when you select it straight from its table, and inside `json_object` or `json_arrayagg`. Through a subquery or a `with` query, under a `union`, in an expression, and as a parameter written to the column, it's `unknown`.
+
+MySQL:
+
+```sql
+select json_object('p', payload) as wrapped,
+  json_extract(payload, '$.x') as x
+from events
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  wrapped: {
+    p: { x: number; code?: string; [key: string]: unknown };
+  };
+  x: unknown | null;
+}[]
+```
+
+**An empty array as a default**
+
+Over no rows, `json_arrayagg` returns `NULL`. A default of an empty array keeps the array's type:
+
+MySQL:
+
+```sql
+select coalesce(json_arrayagg(id), json_array()) as ids
+from orders
+where user_id = :user_id
+```
+
+```ts
+// Params
+{ user_id: number }
+// Returns
+{ ids: number[] }[]
+```
+
+MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`, `if`, `prefixItems` and `contains` don't narrow the type.
+
+### Vectors
+
+A `VECTOR`, new in MySQL 9, comes back as a `number[]` of 32-bit floats. A vector parameter takes a `number[]`, which works anywhere MySQL accepts a `VECTOR`; `NaN` and infinities are rejected before the query runs.
+
+- `STRING_TO_VECTOR('[1, 2.5, 0.1]')` → `[1, 2.5, 0.10000000149011612]`
+
+## Nullability
+
+Every column is typed `| null` unless Reylo can tell it never is null. On MySQL, it starts from what the server reports for each column, then adds what the query's `where` and `group by` rule out:
+
+**`NOT NULL` columns**
+
+A table's column is non-null if it's `NOT NULL`.
+
+MySQL:
+
+```sql
+select name, email
+from users
+```
+
+```ts
+// Params
+void
+// Returns
+{ name: string; email: string | null }[]
+```
+
+**Outer joins**
+
+An outer join makes the joined table's columns nullable.
+
+MySQL:
+
+```sql
+select u.name, o.total
+from users u
+left join orders o on o.user_id = u.id
+```
+
+```ts
+// Params
+void
+// Returns
+{ name: string; total: string | null }[]
+```
+
+**Tests that rule out `NULL`**
+
+A test that fails on `NULL`, in the `where` or a later inner join's `on`, makes its column non-null, and on a joined table shows the row exists. It doesn't count under an `or` that tests another column, or through `coalesce`, `ifnull` and `<=>`.
+
+MySQL:
+
+```sql
+select u.name, o.total, o.ships_on
+from users u
+left join orders o on o.user_id = u.id
+where o.ships_on is not null
+```
+
+```ts
+// Params
+void
+// Returns
+{ name: string; total: string; ships_on: string }[]
+```
+
+**Expressions**
+
+An expression is non-null when the server says so: `coalesce` and `ifnull` with a non-null argument, `count`, `length`, comparisons and integer arithmetic. The server is cautious with string and date functions, most casts and division, which stay nullable even over a `NOT NULL` column.
+
+MySQL:
+
+```sql
+select length(name) as n,
+  upper(name) as shout,
+  coalesce(upper(name), '') as shout_or_empty,
+  id / 2 as half
+from users
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  n: bigint;
+  shout: string | null;
+  shout_or_empty: string;
+  half: string | null;
+}[]
+```
+
+**Aggregates**
+
+Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
+
+MySQL:
+
+```sql
+select user_id,
+  json_arrayagg(id) as order_ids,
+  max(ships_on) as last_ships_on,
+  sum(total) as spent
+from orders
+group by user_id
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  user_id: number;
+  order_ids: number[];
+  last_ships_on: string | null;
+  spent: string;
+}[]
+```
+
+**Subqueries**
+
+A scalar subquery that aggregates without a `group by` returns one row, so its `count` is non-null, whether it reads a table, a subquery in `from` or a `with` query. A column read from a `with` query or a subquery in `from` is as nullable as it is in that query.
+
+MySQL:
+
+```sql
+select d.id, d.orders
+from (
+  select u.id, (select count(*) from orders o where o.user_id = u.id) as orders
+  from users u
+) d
+```
+
+```ts
+// Params
+void
+// Returns
+{ id: number; orders: bigint }[]
+```
+
+**Window functions**
+
+Over a window, `sum`, `avg`, `min` and `max` follow their argument, and `json_arrayagg` and `json_objectagg` are never null. A frame that can leave out the current row, such as `rows between 1 following and 2 following`, or a `range` frame with an offset keeps them nullable.
+
+MySQL:
+
+```sql
+select id,
+  sum(total) over (order by placed_at) as running_total,
+  max(ships_on) over (partition by user_id) as last_ships_on
+from orders
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  id: bigint;
+  running_total: string;
+  last_ships_on: string | null;
+}[]
+```
+
+**`WITH ROLLUP`**
+
+A `WITH ROLLUP` adds summary rows whose grouped columns are `NULL`, and the types include `null`.
+
+MySQL:
+
+```sql
+select role, count(*) as n
+from users
+group by role with rollup
+```
+
+```ts
+// Params
+void
+// Returns
+{ role: string | null; n: bigint }[]
+```
+
+To tell Reylo a value is never null, give it a default with `coalesce` or `ifnull`, or filter out the nulls with `where x is not null`.
+
+## Cardinality
+
+Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+
+| `.run()` returns | `cardinality` | When the query |
+| --- | --- | --- |
+| `Row` | `one` | is an aggregate without a `group by`, or `values row(…)` of one row |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique key with `=`, against a value of the key's own type, through joins on the joined table's numeric key, and through a derived table, a `with` query or a view that keeps the key; is a `distinct` or `group by` over values the `where` pins; or has `limit 1` |
+| `void` | `none` | is an `insert`, `update`, `delete` or `replace`, `on duplicate key update` included |
+| `Row[]` | `many` | is anything else |
+
+MySQL has no `returning`, so a write returns nothing. To read a new row's id, select `last_insert_id()` on the same connection:
+
+`main.ts`:
+
+```ts
+import mysql from "mysql2/promise";
+import lastInsertId from "./my_last_insert_id.sql";
+
+const db = mysql.createPool(process.env.DATABASE_URL);
+const conn = await db.getConnection();
+// … run an insert on conn, then:
+const { id } = await lastInsertId.run(conn);
+conn.release();
+```
+
+`my_last_insert_id.sql`:
+
+```sql
+select last_insert_id() as id
+```
+
+These don't count as a key match, so the query returns `Row[]`:
+
+| Case | Example |
+| --- | --- |
+| A join that matches one table's key while the other table matches many rows | `from posts p join users u on u.id = p.user_id where u.id = :id` |
+| A join on a string key, compared under a collation MySQL picks | `join users u on u.email = p.email` |
+| An integer or decimal key compared with a `float` or `double` column, or with a parameter cast to one, which MySQL compares as doubles, so two keys past 2^53 match one value | `on u.id = s.score`, `where id = cast(:x as double)` |
+| A `distinct` or `group by` not over the key | `select distinct total …` |
+| A string key compared with a number, which MySQL compares as doubles | `where email = 5` |
+| A `TIMESTAMP` key, since two instants can show as one time when clocks go back | `where created = :at` |
+| A `WITH ROLLUP`, which adds rows | `group by id with rollup` |
+| A derived table, a `with` query or a view that passes the key through an expression, repeats rows with `union all`, or joins several rows per row of the keyed table | `select * from (select id + 0 as id from users) u where u.id = :id` |
+| A view whose column list renames its columns | `create view v (user_id, label) as select id, name from users` |
+
+A multi-table `delete` or `update` returns nothing, and so does `select … into @variable`.
+
+## Parameters
+
+### Placeholders
+
+Write parameters as `:name`, and pass `.run()` an object with those names. You can use MySQL's `?` instead, but not both in one query; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
+
+### What a parameter takes
+
+A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query:
+
+| SQL type | A parameter takes |
+| --- | --- |
+| `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `YEAR` | `number` |
+| A `BIGINT` column | `number`, `bigint` or a string of digits |
+| A `TINYINT(1)` or `BIT(1)` column | `boolean` or `number` |
+| `DECIMAL` | `string` |
+| `FLOAT`, `DOUBLE` | `number` |
+| `CHAR`, `VARCHAR`, `TEXT`, `ENUM`, `SET` | `string` |
+| `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` | `string` |
+| `JSON` | any JSON value |
+| `BINARY`, `VARBINARY`, `BLOB` | `Uint8Array` |
+| `VECTOR` | `number[]` |
+
+**Integers**
+
+MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with or written to. Elsewhere it uses MySQL's type, as for `limit`:
+
+MySQL:
+
+```sql
+select name
+from users
+where id > :after
+limit :n
+```
+
+```ts
+// Params
+{ after: number; n: number }
+// Returns
+{ name: string }[]
+```
+
+**Dates and times**
+
+A date or time parameter takes the text, never a `Date`, since drivers convert a `Date` in different time zones:
+
+`main.ts`:
+
+```ts
+import ordersSince from "./my_orders_since.sql";
+
+await ordersSince.run(db, { since: "2026-10-12 19:06:48" });
+```
+
+`my_orders_since.sql`:
+
+```sql
+select id from orders where placed_at > :since
+```
+
+A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since MySQL would store the text's own bytes. Decode the text into a `Uint8Array` first.
+
+A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
+
+### Parameters that may be null
+
+A parameter accepts `null` in two places. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
+
+**Cast to `nullable(…)`**
+
+A cast to `nullable(type)` makes the parameter that type or `null`.
+
+MySQL:
+
+```sql
+select id, name
+from users
+where role = coalesce(:role::nullable(text), role)
+```
+
+```ts
+// Params
+{ role?: string | null }
+// Returns
+{ id: number; name: string }[]
+```
+
+**Written to a nullable column**
+
+Written directly into a column that accepts `NULL`, with no cast, in an `insert`, `update`, `replace` or `on duplicate key update`. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
+
+MySQL:
+
+```sql
+insert into orders (user_id, total, ships_on)
+values (:user_id, :total, :ships_on)
+```
+
+```ts
+// Params
+{ user_id: number; total: string; ships_on?: string | null }
+// Returns
+void
+```
+
+Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:p is null`, `:p <=> col`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
+
+### Casts
+
+MySQL has no `::` casts, so Reylo turns `:p::type` into MySQL's `CAST`. It also checks your value against the type before the query runs, since MySQL's `CAST` silently turns a bad value into 0 or `NULL`. MySQL's own `cast(:p as …)` works too.
+
+| You write | MySQL runs |
+| --- | --- |
+| `::int`, `::bigint`, `::smallint` | `CAST(? AS SIGNED)` |
+| `::int unsigned` | `CAST(? AS UNSIGNED)` |
+| `::numeric(10,2)`, `::decimal(10,2)` | `CAST(? AS DECIMAL(10,2))` |
+| `::real`, `::double precision` | `CAST(? AS FLOAT)`, `CAST(? AS DOUBLE)` |
+| `::text`, `::varchar(20)`, `::uuid` | `?`, typed as text, since it then takes the collation of the column it meets |
+| `::date`, `::time`, `::datetime` | `CAST(? AS DATE)`, `CAST(? AS TIME)`, `CAST(? AS DATETIME(6))` |
+| `::json` | `CAST(? AS JSON)` |
+| `::bytea`, `::blob` | `CAST(? AS BINARY)` |
+| `::int` in `limit` or `offset` | `?`, since MySQL takes only a bare value there |
+| `::timestamptz`, `::boolean` | An error: MySQL has neither type |
+
+The check rejects an integer out of range, a decimal with more digits than its scale, and a date that doesn't exist (`"2026-02-30"`).
+
+A `json_table` column of a text type takes your database's collation, where its character set is `utf8mb4`, as JSON's is. MySQL would give it the connection's, which mysql2 sets to `utf8mb4_unicode_ci` while MySQL 8 makes a database `utf8mb4_0900_ai_ci`, and comparing it with a column would fail with "Illegal mix of collations". A type that names its own `character set` or `collate` is left as you wrote it, so to compare with a column of another collation, name that collation in the `json_table` column. Your own `cast(… as char)` takes the connection's collation, so write `::text` instead, which takes the column's.
+
+## Database errors
+
+With [`.try()`](https://reylo.dev/#try), an error MySQL raised comes back as `{ error }`, with the same fields on every driver:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The error's name, as `"ER_DUP_ENTRY"`, from the 1,777 that MySQL 8.4 sends a client, or `undefined` for a number it doesn't define, such as one a `signal` sets |
+| `errno` | The error's number, as `1062` |
+| `sqlState` | The SQLSTATE, as `"23000"` |
+| `message` | The server's message |
+| `key` | On a duplicate entry, the key as the message names it, as `users.email` |
+| `constraint` | On a foreign key or a check the row fails, the constraint |
+| `table` | On a foreign key the row fails, the table it belongs to |
+| `column` | On a null, a missing value, or a value too long or out of range, the column |
+
+Reylo names the error from MySQL's own list whichever driver ran it, since each driver keeps an older list, or MariaDB's. MySQL names a key, a constraint or a column only in its message, which Reylo reads in English, so on a server whose `lc_messages` is another language those fields are `undefined`.
+
+When the query fires no trigger and calls no stored function, directly or through a view, its error type is narrowed: a duplicate entry names only the unique keys of the tables it writes, and a foreign key, check, null or value error only their constraints and columns.
+
+## Drivers
+
+Reylo decodes its query results itself, so options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the `mysql2` that `@reylosql/mysql` carries, whatever driver your app uses, PlanetScale and `Bun.sql` included.
+
+Each example below runs this query:
+
+```sql
+select id, name, email from users where id = :id
+```
+
+### `mysql2`
+
+Pass a pool or a connection, from the promise API or the callback API, or a connection taken from a pool, which can run a transaction:
+
+`main.ts`:
+
+```ts
+import mysql from "mysql2/promise";
+import mysqlCallbacks from "mysql2";
+import getUser from "./my_get_user.sql";
+
+const db = mysql.createPool(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+const conn = await db.getConnection();
+await conn.beginTransaction();
+await getUser.run(conn, { id: 1 });
+await conn.commit();
+conn.release();
+
+const callbackPool = mysqlCallbacks.createPool(process.env.DATABASE_URL);
+await getUser.run(callbackPool, { id: 1 });
+```
+
+### `mariadb`
+
+The `mariadb` driver works with a MySQL server, as the others do: the type check refuses a MariaDB server. It takes only a `mariadb://` URL, which Reylo reads as MySQL. Pass a pool or a connection, from the promise API or the callback API, or a connection taken from a pool, which can run a transaction:
+
+`main.ts`:
+
+```ts
+import mariadb from "mariadb";
+import mariadbCallbacks from "mariadb/callback";
+import getUser from "./my_get_user.sql";
+
+const db = mariadb.createPool(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+const conn = await db.getConnection();
+await conn.beginTransaction();
+await getUser.run(conn, { id: 1 });
+await conn.commit();
+await conn.release();
+
+const callbackPool = mariadbCallbacks.createPool(process.env.DATABASE_URL);
+await getUser.run(callbackPool, { id: 1 });
+```
+
+### PlanetScale
+
+Pass a connection, or the transaction it hands its callback:
+
+`main.ts`:
+
+```ts
+import { connect } from "@planetscale/database";
+import getUser from "./my_get_user.sql";
+
+const db = connect({ url: process.env.DATABASE_URL });
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
+Version 2.0 isn't supported, since it can't bind parameters.
+
+### `Bun.sql`
+
+Pass the client, or a transaction, savepoint or reserved connection taken from it:
+
+`main.ts`:
+
+```ts
+import { SQL } from "bun";
+import getUser from "./my_get_user.sql";
+
+const db = new SQL(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+await db.begin(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.savepoint((sp) => getUser.run(sp, { id: 1 }));
+});
+
+const reserved = await db.reserve();
+await getUser.run(reserved, { id: 1 });
+reserved.release();
+```
+
+Bun loses the microseconds of a `DATETIME`, a fraction that is all zeros, and a `TIME`'s fraction in a query with parameters, before Reylo sees them. An expression that could be a `BIGINT` or a `DECIMAL` (`round(:x)`) comes back as a `bigint` when it has no decimal point, since Bun returns both as text. Bun 1.4 can't read a `VECTOR` at all (`ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`), so select `vector_to_string(v)` instead.
+
+### Drizzle
+
+Pass a Drizzle database over `mysql2` or PlanetScale, or a transaction or savepoint taken from it:
+
+`main.ts`:
+
+```ts
+import { drizzle } from "drizzle-orm/mysql2";
+import getUser from "./my_get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+await db.transaction(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
+## Limits
+
+What Reylo can't type on MySQL, and what to do instead:
+
+| Limit | Instead |
+| --- | --- |
+| An `ENUM`'s labels: an `ENUM` is typed `string` | Check the value in TypeScript where you need the union |
+| Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
+| A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `unknown` |
+| A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
+| A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
+| `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](https://reylo.dev/#bulk-inserts) |
+| A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types and any number of rows |
+| A statement other than a query, such as `create index` or `show tables` | None: it returns nothing, or rows whose columns are all nullable, as MySQL reports |
+| `explain` and `call`, whose rows MySQL describes only once they run | None: each is an error |
+| A file of several statements, such as a migration | Put each statement in a file of its own |
+
+# SQLite
+
+> How Reylo types SQL queries on SQLite. The TypeScript type of each column, null values, row counts, parameters, drivers and limits.
+
+How Reylo types queries on SQLite
+
+[Reylo](https://reylo.dev/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on SQLite: column types, null values, row counts, parameters and drivers.
+
+| | |
+| --- | --- |
+| SQLite versions | Reylo checks each query with its own SQLite 3.53, and again with the SQLite of each driver your `package.json` lists ([Functions](https://reylo.dev/sqlite#functions)) |
+| Connection | A `file:` or `sqlite:` URL in `DATABASE_URL` or [`direct_url`](https://reylo.dev/#direct_url); a relative path starts at your `package.json` |
+| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects ([Drivers](https://reylo.dev/sqlite#drivers)) |
+| Type checking | Reads your schema with Node's built-in `node:sqlite`, so it needs no driver |
+
+**View the schema behind the examples**
+
+```sql
+-- not strict, since a STRICT table takes no BOOLEAN or BIGINT column
+create table users (
+  id integer primary key,
+  name text not null,
+  email text unique,
+  nick text,
+  github_id bigint,
+  active boolean not null default 1,
+  created_at text not null
+    default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+```
+
+```sql
+create table orders (
+  id integer primary key,
+  user_id integer not null references users (id),
+  total_cents integer not null,
+  placed_at text not null
+    default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  ships_on text,
+  receipt blob
+) strict;
+```
+
+```sql
+create table events (
+  id integer primary key,
+  kind text not null,
+  payload text not null
+) strict;
+```
+
+## Data types
+
+SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](https://reylo.dev/sqlite#declared-types-and-strict-tables)). Reylo types each column by its declared type, and `.run()` returns the same value for it on every driver, or throws where a driver would round it ([Drivers](https://reylo.dev/sqlite#drivers)):
+
+| Declared type, or expression | TypeScript | The value `.run()` returns |
+| --- | --- | --- |
+| `INTEGER`, `INT`, and any other type with `INT` in its name | `number` | `42` |
+| `BIGINT`, `INT8`, `UNSIGNED BIG INT` | `bigint` | `9007199254740993n` |
+| `REAL`, `FLOAT`, `DOUBLE` | `number` | `1.5` |
+| `TEXT`, `VARCHAR`, and any type with `CHAR`, `CLOB` or `TEXT` | `string` | `"Ada"` |
+| `BLOB` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| `BOOLEAN`, `BOOL` | `boolean` | `true` |
+| A comparison, `IS NULL`, `IN`, `BETWEEN`, `LIKE`, `GLOB`, `EXISTS`, `NOT`, `AND`, `OR` | `boolean` | `false` |
+| `NUMERIC`, `DECIMAL`, `DATE`, `DATETIME`, and any other name | `number \| string` | `1.5`, `"2026-10-20"` |
+| No type, or `ANY` in a `STRICT` table | `unknown` | whatever was stored |
+| `count(*)`, `length(…)` | `number` | `2` |
+| `json_object(…)`, `json_group_array(…)` | the object or array it builds | `{ total: 1250 }` |
+| `json_extract(…)`, `->`, `->>` | `unknown` | `1250` |
+
+Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
+
+### Declared types and STRICT tables
+
+Reylo types a column by its declared type, following [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity), as in the table above. Outside a `STRICT` table, any column can hold any kind of value, and `.run()` throws an error naming the column when it reads one its type doesn't allow:
+
+`main.ts`:
+
+```ts
+import loose from "./lite_loose.sql";
+
+const rows = await loose.run(db);
+```
+
+`lite_loose.sql`:
+
+```sql
+-- users is not strict: name and nick may hold a BLOB
+select name, nick from users
+```
+
+**`STRICT` tables**
+
+A `STRICT` table enforces its column types, so they're exact there. It can't declare `BOOLEAN`, `BIGINT`, `DATE` or `NUMERIC` columns, so a flag in one is an `INTEGER`, typed `number`.
+
+SQLite:
+
+```sql
+select id, total_cents, receipt
+from orders
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  id: number;
+  total_cents: number;
+  receipt: Uint8Array | null;
+}[]
+```
+
+**Values of another kind**
+
+Outside a `STRICT` table, a value of another kind, such as the text `'abc'` in an `INTEGER` column, makes `.run()` throw a `TypeError` that names the column. To read whatever the column holds, cast it:
+
+SQLite:
+
+```sql
+select cast(nick as text) as nick
+from users
+```
+
+```ts
+// Params
+void
+// Returns
+{ nick: string | null }[]
+```
+
+**`CHECK` constraints**
+
+A `CHECK` constraint doesn't narrow a type, since `pragma ignore_check_constraints` lets any connection skip it.
+
+```sql
+-- Schema
+create table members (
+  id integer primary key,
+  role text not null check (role in ('admin', 'member'))
+) strict;
+```
+
+SQLite:
+
+```sql
+select role
+from members
+```
+
+```ts
+// Params
+void
+// Returns
+{ role: string }[]
+```
+
+### Integers
+
+A column declared `BIGINT`, `INT8` or `UNSIGNED BIG INT` comes back as a JavaScript `bigint`, exact to 64 bits. Every other integer is a `number`, including `INTEGER` and `INT` columns, the rowid and `count(*)`:
+
+`main.ts`:
+
+```ts
+import userOrders from "./lite_user_orders.sql";
+
+const rows = await userOrders.run(db);
+```
+
+`lite_user_orders.sql`:
+
+```sql
+select u.id, u.github_id, count(o.id) as orders
+from users u
+left join orders o on o.user_id = u.id
+group by u.id
+```
+
+**What stays a `bigint`**
+
+A `BIGINT` column stays a `bigint` through a subquery, a view, `min()`, `max()`, `coalesce()` and `CASE`. Here `users.github_id` holds 9007199254740993:
+
+- `max(github_id)` → `9007199254740993n`
+- `coalesce(github_id, 0)` → `9007199254740993n`
+- `(select github_id from users)` → `9007199254740993n`
+
+**What SQLite computes from it**
+
+A value computed from a `BIGINT`, such as `github_id + 1` or `sum(github_id)`, is a plain integer, typed `number`. Here `users.github_id` holds 41:
+
+- `github_id + 1` → `42`
+- `sum(github_id)` → `41`
+
+**Past what a `number` holds**
+
+An integer too large for a `number`, past ±(2^53 − 1), throws an error naming its column rather than come back rounded. Declare the column `BIGINT`, or cast the value to text: `cast(max(id) as text)`. Some drivers round even a `BIGINT` ([Drivers](https://reylo.dev/sqlite#drivers)).
+
+- `9007199254740993` → `throws TypeError`
+- `cast(9007199254740993 as text)` → `"9007199254740993"`
+
+### Decimals
+
+SQLite has no decimal type: a `NUMERIC` or `DECIMAL` column holds whatever was stored, so it's typed `number | string`. Store exact amounts as integers of the smallest unit, as `orders.total_cents` does; here it holds 1250 and 1251:
+
+- `sum(total_cents)` → `2501`
+- `avg(total_cents)` → `1250.5`
+
+### Dates and times
+
+SQLite has no date or time type: a date is whatever you store, typed by its column. A date in a `TEXT` column is a `string`:
+
+`main.ts`:
+
+```ts
+import orderDates from "./lite_order_dates.sql";
+
+const order = await orderDates.run(db, { id: 1 });
+```
+
+`lite_order_dates.sql`:
+
+```sql
+select placed_at, ships_on from orders where id = :id
+```
+
+**Instants as ISO 8601 text**
+
+Store an instant as ISO 8601 text in UTC with a `Z`, as `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` writes it, which `Temporal.Instant.from()` and `new Date()` can read. SQLite's `current_timestamp` and `datetime()` write UTC without a zone, which looks like local time.
+
+- `strftime('%Y-%m-%dT%H:%M:%fZ', '2026-10-20 10:00:00')` → `"2026-10-20T10:00:00.000Z"`
+- `datetime('2026-10-20T10:00:00.000Z')` → `"2026-10-20 10:00:00"`
+
+**Columns declared `DATE`**
+
+A column declared `DATE` or `DATETIME` has `NUMERIC` affinity, so it can hold a number or text, typed `number | string`. Declare it `TEXT` instead, or `INTEGER` for Unix time.
+
+### Truth values
+
+SQLite has no boolean type, and a comparison returns 1 or 0. Reylo types every comparison your query makes as `boolean`, and every column declared `BOOLEAN` or `BOOL`:
+
+`main.ts`:
+
+```ts
+import userFlags from "./lite_user_flags.sql";
+
+const rows = await userFlags.run(db);
+```
+
+`lite_user_flags.sql`:
+
+```sql
+select id, active, name like 'A%' as starts_with_a from users
+```
+
+**What counts**
+
+These are typed `boolean`: comparisons, `IN`, `BETWEEN`, `EXISTS`, `IS`, `NOT`, `AND`, `OR`, `like`, `glob`, `regexp` and `match`, and a `CASE`, `coalesce`, `ifnull`, `iif` or subquery whose every value is one of them. A `BOOLEAN` column stays `boolean` through a subquery or a view.
+
+- `iif(1 = 1, 0 = 1, 1 = 1)` → `false`
+- `(select active from users)` → `true`
+
+**Values other than 0 and 1**
+
+SQLite doesn't enforce a `BOOLEAN` column, so it can hold 2, `'yes'` or a `BLOB`. Reylo reads 0 and 1 as `false` and `true`, and throws an error naming the column for any other value. Here `users.active` holds 2:
+
+- `active` → `throws TypeError`
+- `active + 0` → `2`
+
+### JSON
+
+SQLite has no JSON type, so a stored document is `TEXT`, typed `string`. JSON your query builds with `json_object`, `json_array`, `json_group_array` or `json_group_object` is typed from what you put in it, and comes back parsed:
+
+`main.ts`:
+
+```ts
+import orderSummaries from "./lite_order_summaries.sql";
+
+const rows = await orderSummaries.run(db);
+```
+
+`lite_order_summaries.sql`:
+
+```sql
+select u.name,
+  json_object('total_cents', o.total_cents, 'active', u.active) as summary
+from orders o
+join users u on u.id = o.user_id
+```
+
+**Values inside a document**
+
+Inside JSON, a value can differ from the same value in a column: a boolean is `1` or `0`, and integers past 2^53 lose precision in `JSON.parse`.
+
+- `json_object('a', 1 = 1)` → `{ a: 1 }`
+- `json_object('n', 9007199254740993)` → `{ n: 9007199254740992 }`
+
+**Built JSON inside built JSON**
+
+JSON you build can nest inside other JSON you build, directly or through `coalesce` and `case`. To nest a scalar subquery's JSON, wrap the subquery in `json(…)`: without it, newer SQLite versions, such as 3.54.1 in Node 26.11's `node:sqlite`, nest it as text, so Reylo types it `unknown`.
+
+- `json_object('n', case when 1 then json_object('a', 1) end)` → `{ n: { a: 1 } }`
+- `json_object('n', json((select json_object('a', 1))))` → `{ n: { a: 1 } }`
+
+**Where it stops being JSON**
+
+Read through a subquery's column, a view or `lag`, built JSON loses SQLite's JSON marker, so Reylo types it `unknown` (a cast keeps the marker on SQLite 3.53, but not on Turso). Build the JSON in the query that returns it.
+
+- `json_object('n', (select j from (select json_object('a', 1) as j)))` → `{ n: "{\"a\":1}" }`
+
+**Over no rows**
+
+Over no rows, `json_group_array` returns `[]`, never `null`.
+
+- `(select json_group_array(id) from users where 0)` → `[]`
+
+**Reading a document**
+
+Values read with `json_extract`, `->` and `->>` are typed `unknown`, since they depend on the document.
+
+- `json_extract('{"a":1}', '$.a')` → `1`
+- `'{"a":"x"}' ->> '$.a'` → `"x"`
+
+### Functions
+
+SQLite doesn't report what a function returns, so Reylo has its own table of SQLite's built-in functions: `count` returns a non-null integer, `coalesce` the type of its arguments, and `upper` text that is `NULL` only when its argument is.
+
+**Functions that answer `NULL`**
+
+A function that can return `NULL` for non-null arguments is typed `| null`. That includes the date functions, given text they can't read, and math functions such as `sqrt` and `ln` outside their domain. So `date(placed_at)` is `string | null`, while `date('now')` is a `string`.
+
+- `date('not a date')` → `null`
+- `date('2026-10-20', '+1 fortnight')` → `null`
+- `sqrt(-1)` → `null`
+
+**Values of several kinds**
+
+A value that is one of several, from `coalesce`, `ifnull`, `case`, `iif`, a `min` or `max` of several arguments, a `lag` or `lead` with a default, or a `union`'s column, is typed by the values it can be. It's `unknown` where one of them may be another kind, such as `json_extract(…)`.
+
+SQLite:
+
+```sql
+select coalesce(ships_on, placed_at) as day,
+  coalesce(ships_on, json_extract('{"a":1}', '$.a')) as mixed
+from orders
+```
+
+```ts
+// Params
+void
+// Returns
+{ day: string; mixed: unknown | null }[]
+```
+
+**Functions missing from the table**
+
+A built-in function missing from Reylo's table, such as `unhex`, returns `unknown`. Cast its result to type it:
+
+SQLite:
+
+```sql
+select unhex('ff') as raw,
+  cast(unhex('ff') as blob) as bytes
+```
+
+```ts
+// Params
+void
+// Returns
+{ raw: unknown | null; bytes: Uint8Array | null }[]
+```
+
+Your driver's SQLite may be older than Reylo's: libSQL ships SQLite 3.45.1, which has no `json_pretty`. So the type check also runs each query on every one of `better-sqlite3`, `@libsql/client`, `sqlite3` and `@tursodatabase/database` in your `package.json`, and reports any error with that driver's message. With `wrangler` in your `package.json` and a D1 database in its config, it also runs each query on Cloudflare D1 as wrangler runs it locally, since D1 blocks some of SQLite's functions, such as `json_pretty` and `power`. Durable Objects block the same ones. It can't check `bun:sqlite`.
+
+## Nullability
+
+Every column is typed `| null` unless Reylo can tell it never is null. SQLite itself reports nothing useful here, so Reylo reads your schema and the query:
+
+**`NOT NULL` columns**
+
+A table's column is non-null if it's declared `NOT NULL`.
+
+SQLite:
+
+```sql
+select name, nick
+from users
+```
+
+```ts
+// Params
+void
+// Returns
+{ name: string; nick: string | null }[]
+```
+
+**Outer joins**
+
+An outer join makes the joined table's columns nullable.
+
+SQLite:
+
+```sql
+select u.name, o.total_cents
+from users u
+left join orders o on o.user_id = u.id
+```
+
+```ts
+// Params
+void
+// Returns
+{ name: string; total_cents: number | null }[]
+```
+
+**Tests that rule out `NULL`**
+
+A test that fails on `NULL` in the `where` makes its column non-null, and on a joined table shows the row exists.
+
+SQLite:
+
+```sql
+select u.name, o.total_cents, o.ships_on
+from users u
+left join orders o on o.user_id = u.id
+where o.ships_on is not null
+```
+
+```ts
+// Params
+void
+// Returns
+{ name: string; total_cents: number; ships_on: string }[]
+```
+
+**Expressions**
+
+Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](https://reylo.dev/sqlite#limits)).
+
+SQLite:
+
+```sql
+select upper(nick) as shout,
+  coalesce(nick, name) as label,
+  length(name) as n,
+  100 / id as per_id
+from users
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  shout: string | null;
+  label: string;
+  n: number;
+  per_id: number | null;
+}[]
+```
+
+**Aggregates**
+
+An aggregate other than `count` returns `NULL` over no rows.
+
+SQLite:
+
+```sql
+select count(*) as n, max(total_cents) as top
+from orders
+```
+
+```ts
+// Params
+void
+// Returns
+{ n: number; top: number | null }[]
+```
+
+**Window functions**
+
+A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. Over a window, `min` and `max` follow their argument, unless a `filter` or a frame that can leave out the current row keeps them nullable. A `sum` or `avg` is nullable, since SQLite returns `NaN` as `NULL`, and so is `group_concat`, which libSQL and Turso return as `NULL` over a frame of empty strings.
+
+SQLite:
+
+```sql
+select id,
+  lag(total_cents) over (order by id) as previous_total,
+  row_number() over (order by id) as n,
+  max(total_cents) over (partition by user_id) as largest_total
+from orders
+```
+
+```ts
+// Params
+void
+// Returns
+{
+  id: number;
+  previous_total: number | null;
+  n: number;
+  largest_total: number;
+}[]
+```
+
+To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
+
+## Cardinality
+
+Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+
+| `.run()` returns | `cardinality` | When the query |
+| --- | --- | --- |
+| `Row` | `one` | is an aggregate without a `group by`, `values` of one row, or inserts one row and has `returning`, an `on conflict do update` included |
+| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; or is an `update` or `delete` by key with `returning` |
+| `void` | `none` | is an `insert`, `update`, `delete` or `replace` without `returning` |
+| `Row[]` | `many` | is anything else |
+
+These don't count as a key match, so the query returns `Row[]`:
+
+| Case | Example |
+| --- | --- |
+| A unique index on an expression, or a partial one | `where lower(email) = :email`, even with a unique index on `lower(email)` |
+| A `TEXT` or untyped key compared with a number, which SQLite converts, so `'1'` and `'01'` both match | `where code = cast(:code as integer)` |
+| A key compared under another collation: SQLite uses the left side's, so `'x'` and `'X'` both match | `r.k = c.code`, with a `NOCASE` column on the left |
+| A column you declared named `rowid`, which isn't the real rowid | `where rowid = :id` |
+| A subquery, a `with` query or a view that passes the key through an expression, repeats rows with `union all`, or joins several rows per row of the keyed table | `select * from (select id + 0 as id from users) u where u.id = :id` |
+
+## Parameters
+
+### Placeholders
+
+Write parameters as `:name`, `@name` or `$name`, one style per query, and pass `.run()` an object with those names, without the prefix. You can use SQLite's `?` or `?1` instead, but not beside names; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
+
+### What a parameter takes
+
+A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query:
+
+| Affinity | A parameter takes |
+| --- | --- |
+| `INTEGER` | `number` |
+| A `BIGINT`, `INT8` or `UNSIGNED BIG INT` column | `number` or `bigint` |
+| `REAL` | `number` |
+| `TEXT` | `string` |
+| `BLOB` | `Uint8Array` |
+| `NUMERIC`, a `BOOLEAN` or `DATE` column's included | `number`, `string` or `boolean` |
+| A typed JSON parameter | what its schema admits |
+
+A `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since SQLite would store it as `TEXT`. Decode the text into a `Uint8Array` first.
+
+### Parameters without a type
+
+SQLite can type a parameter only in these places:
+
+- compared with a typed value, including inside a row comparison (`(created_at, id) < (:at, :id)`)
+- written to a column by an `insert` or `update`
+- in a `cast`, arithmetic, `limit` and `offset`, `in`, `between`, or a `case` branch
+- as an argument of a built-in function in Reylo's table (`lower(:s)` is text, `abs(:n)` a number)
+
+Anywhere else, such as a bare `select :x` or `:x is null`, the parameter is `unknown` until you cast it:
+
+`main.ts`:
+
+```ts
+import echo, { type Params } from "./lite_echo.sql";
+```
+
+`lite_echo.sql`:
+
+```sql
+select :value as value, :count::int as count
+```
+
+By default, such a parameter is a type-check error asking for a cast. With [`strict_params: false`](https://reylo.dev/#strict_params) in `.reylo.yaml`, it's typed `unknown` instead, as above.
+
+### Parameters that may be null
+
+A parameter accepts `null` in two places. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
+
+**Cast to `nullable(…)`**
+
+A cast to `nullable(type)` makes the parameter that type or `null`.
+
+SQLite:
+
+```sql
+select id, name
+from users
+where name = coalesce(:name::nullable(text), name)
+```
+
+```ts
+// Params
+{ name?: string | null }
+// Returns
+{ id: number; name: string }[]
+```
+
+**Written to a nullable column**
+
+Written directly into a column that accepts `NULL`, with no cast. A column accepts it unless it's `NOT NULL` or a `check (… is not null)` covers it.
+
+SQLite:
+
+```sql
+insert into orders (user_id, total_cents, ships_on)
+values (:user_id, :total_cents, :ships_on)
+```
+
+```ts
+// Params
+{
+  user_id: number;
+  total_cents: number;
+  ships_on?: string | null;
+}
+// Returns
+void
+```
+
+Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:p is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
+
+### Casts
+
+SQLite has no `::` casts, so Reylo turns `:p::type` into SQLite's `CAST`. It also checks your value against the type before the query runs, since SQLite's `CAST` never fails: `CAST('abc' AS INTEGER)` is 0. SQLite's own `cast(:p as …)` works too.
+
+| You write | SQLite runs |
+| --- | --- |
+| `::int`, `::integer`, `::bigint` | `CAST(? AS INTEGER)` |
+| `::real`, `::float`, `::double precision` | `CAST(? AS REAL)` |
+| `::text`, `::varchar(20)` | `CAST(? AS TEXT)` |
+| `::numeric`, `::decimal` | `CAST(? AS NUMERIC)` |
+| `::date`, `::time`, `::timestamp`, `::uuid` | `CAST(? AS TEXT)`, since SQLite's `CAST` to a date reads `'2026-10-12'` as 2026 |
+| `::blob` | `CAST(? AS BLOB)` |
+| `::json`, `::jsonb` | `json(?)`, `jsonb(?)` |
+| `::boolean` | An error, since SQLite has no boolean: pass 1 or 0 and write `::integer` |
+| An array, such as `::text[]` | An error, since SQLite has no arrays |
+
+The check rejects a non-integer for `::int`, and any value outside SQLite's 64-bit range.
+
+## Database errors
+
+With [`.try()`](https://reylo.dev/#try), an error SQLite raised comes back as `{ error }`, with the same fields on every driver:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The result code's name, as `"SQLITE_CONSTRAINT_UNIQUE"`: the most specific one your driver gives |
+| `errcode` | Its number, as `2067` |
+| `message` | SQLite's message |
+| `table`, `columns` | On a unique, not-null or `STRICT` type violation, the table and its columns |
+| `constraint` | On a check the row fails, the check's name, or its expression when it has none; on a unique index of an expression, the index |
+
+Most drivers give the extended code, such as `SQLITE_CONSTRAINT_UNIQUE`. The `sqlite3` driver and the `sqlite` package give only the primary one, `SQLITE_CONSTRAINT`, and Turso's engine gives none from 0.8 on, so its `code` is `undefined` and only `message` names the failure. SQLite doesn't name the foreign key a row fails.
+
+When the query fires no trigger, its error type is narrowed: a unique, not-null or `STRICT` type violation names only the tables and columns it writes, and the indexes of their expressions. A `CHECK` isn't narrowed, since SQLite's catalog doesn't name it, so the index names apply to the extended code alone: under the primary `SQLITE_CONSTRAINT`, the constraint may be a `CHECK`'s.
+
+## Drivers
+
+Reylo decodes its query results itself, so settings on your database connection don't affect Reylo's queries, and Reylo's don't affect yours. Type checking needs no driver: it reads your schema with `node:sqlite`, built into Node since 22.5.
+
+Each example below runs this query:
+
+```sql
+select id, name, email from users where id = :id
+```
+
+### `better-sqlite3`
+
+Pass the database. It's synchronous, so `.runSync()` works too, inside its `db.transaction(fn)` as well:
+
+`main.ts`:
+
+```ts
+import Database from "better-sqlite3";
+import getUser from "./lite_get_user.sql";
+
+const db = new Database("app.db");
+const user = await getUser.run(db, { id: 1 });
+
+const userById = db.transaction((id: number) =>
+  getUser.runSync(db, { id }),
+);
+const sameUser = userById(1);
+```
+
+An integer past 2^53 comes back exact.
+
+### `node:sqlite`
+
+Pass a `DatabaseSync`. It's synchronous, so `.runSync()` works too, between a `begin` and a `commit`:
+
+`main.ts`:
+
+```ts
+import { DatabaseSync } from "node:sqlite";
+import getUser from "./lite_get_user.sql";
+
+const db = new DatabaseSync("app.db");
+const user = await getUser.run(db, { id: 1 });
+
+db.exec("begin");
+const sameUser = getUser.runSync(db, { id: 1 });
+db.exec("commit");
+```
+
+An integer past 2^53 comes back exact.
+
+### `bun:sqlite`
+
+Pass the database. It's synchronous, so `.runSync()` works too, inside its `db.transaction(fn)` as well:
+
+`main.ts`:
+
+```ts
+import { Database } from "bun:sqlite";
+import getUser from "./lite_get_user.sql";
+
+const db = new Database("app.db");
+const user = await getUser.run(db, { id: 1 });
+
+const userById = db.transaction((id: number) =>
+  getUser.runSync(db, { id }),
+);
+const sameUser = userById(1);
+```
+
+An integer past 2^53 comes back exact.
+
+### libSQL
+
+Pass the client, or a transaction taken from it:
+
+`main.ts`:
+
+```ts
+import { createClient } from "@libsql/client";
+import getUser from "./lite_get_user.sql";
+
+const db = createClient({ url: "file:app.db", intMode: "bigint" });
+const user = await getUser.run(db, { id: 1 });
+
+const tx = await db.transaction("write");
+await getUser.run(tx, { id: 1 });
+await tx.commit();
+```
+
+An integer past 2^53 comes back exact with `intMode: "bigint"` or `"string"`; with the default `intMode`, libSQL itself throws a `RangeError`. With `intMode: "string"`, an integer in a column typed `unknown` comes back as a string of digits, since libSQL can't tell it from text.
+
+### Turso
+
+Pass the database, or the transaction `.transactionAsync()` hands its callback. The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well:
+
+`main.ts`:
+
+```ts
+import { connect } from "@tursodatabase/database";
+import { Database } from "@tursodatabase/database/compat";
+import getUser from "./lite_get_user.sql";
+
+const db = await connect("app.db");
+const user = await getUser.run(db, { id: 1 });
+
+await db.transactionAsync((tx) => getUser.run(tx, { id: 1 }))();
+
+const compat = new Database("app.db");
+const userById = compat.transaction((id: number) =>
+  getUser.runSync(compat, { id }),
+);
+const sameUser = userById(1);
+```
+
+An integer past 2^53 comes back exact.
+
+### Cloudflare D1
+
+Pass the binding, or a session from `.withSession()`:
+
+`main.ts`:
+
+```ts
+import type { D1Database } from "@cloudflare/workers-types";
+import getUser from "./lite_get_user.sql";
+
+export default {
+  async fetch(request: Request, env: { DB: D1Database }) {
+    const user = await getUser.run(env.DB, { id: 1 });
+    const sameUser = await getUser.run(env.DB.withSession(), { id: 1 });
+    return Response.json(user);
+  },
+};
+```
+
+D1 rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column.
+
+### Durable Objects
+
+Pass the object's `ctx.storage.sql`. It's synchronous, so `.runSync()` works on it, inside `ctx.storage.transactionSync(fn)` as well:
+
+`main.ts`:
+
+```ts
+import { DurableObject } from "cloudflare:workers";
+import getUser from "./lite_get_user.sql";
+
+export class Board extends DurableObject {
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+
+  userInTransaction(id: number) {
+    const { storage } = this.ctx;
+    return storage.transactionSync(() =>
+      getUser.runSync(storage.sql, { id }),
+    );
+  }
+}
+```
+
+The storage rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
+
+### `sqlite3`
+
+Pass the database:
+
+`main.ts`:
+
+```ts
+import sqlite3 from "sqlite3";
+import getUser from "./lite_get_user.sql";
+
+const db = new sqlite3.Database("app.db");
+const user = await getUser.run(db, { id: 1 });
+```
+
+The driver rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
+
+### `sqlite`
+
+Pass the database `open()` returns, which can run a transaction:
+
+`main.ts`:
+
+```ts
+import { open } from "sqlite";
+import sqlite3 from "sqlite3";
+import getUser from "./lite_get_user.sql";
+
+const db = await open({ filename: "app.db", driver: sqlite3.Database });
+const user = await getUser.run(db, { id: 1 });
+
+await db.exec("begin");
+await getUser.run(db, { id: 1 });
+await db.exec("commit");
+```
+
+The driver rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. It can't bind a `bigint` parameter past 2^53 either, so Reylo rejects one unless it's written to a `BIGINT` column.
+
+### `Bun.sql`
+
+Pass the client, or a transaction or savepoint taken from it:
+
+`main.ts`:
+
+```ts
+import { SQL } from "bun";
+import getUser from "./lite_get_user.sql";
+
+const db = new SQL({
+  adapter: "sqlite",
+  filename: "app.db",
+  safeIntegers: true,
+});
+const user = await getUser.run(db, { id: 1 });
+
+await db.begin(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.savepoint((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
+Without `safeIntegers`, Bun rounds an integer past 2^53, so Reylo throws an error rather than return it, even for a `BIGINT` column. On Bun 1.4.3, `Bun.sql` returns no rows for a query containing a `"` inside a single-quoted string, such as `json_extract('{"a":1}', '$.a')`: pass the document as a parameter instead, `json_extract(:doc::text, '$.a')`.
+
+### Drizzle
+
+Pass a Drizzle database over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects, or a transaction taken from it. Over D1, Drizzle has no transactions. Over `better-sqlite3`, `bun:sqlite` and Durable Objects, `.runSync()` works inside its transactions:
+
+`main.ts`:
+
+```ts
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import getUser from "./lite_get_user.sql";
+
+const db = drizzle("app.db");
+const user = await getUser.run(db, { id: 1 });
+
+db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
+```
+
+## Limits
+
+What Reylo can't type on SQLite, and what to do instead:
+
+| Limit | Instead |
+| --- | --- |
+| Declared types outside a `STRICT` table, which SQLite doesn't enforce, so a value of another kind makes `.run()` throw | Make tables `strict` where you can |
+| Functions your app registers, or an extension's, which Reylo's SQLite doesn't have: the type check fails with "no such function" | Call the function in TypeScript on what `.run()` returns |
+| Attached databases and `TEMP` tables, since the type check reads one database file | None: a query on one is an error in the type check |
+| Virtual table modules on a driver the type check doesn't run the query on, such as `bun:sqlite` or a Durable Object: Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat` | Check that driver's SQLite yourself |
+| `REAL` arithmetic with no answer, such as `1e999 * 0`, which SQLite returns as `NULL` where Reylo types a number | Write `coalesce(price * qty, 0)` where a `REAL` may hold an infinity |
+| A query past 350 nested expressions, which SQLite rejects with "Expression tree is too large" | Split the query up |
+| A statement other than a query, such as `create index` or `pragma table_info(users)` | None: it returns nothing, or rows whose columns are all `unknown` and nullable |
+| A file of several statements, such as a migration | Put each statement in a file of its own |
+
+# reylo.dev playground API
+
+Reylo infers a SQL query's TypeScript types from the database. The playground's API returns them as JSON, analyzed against the playground's sample schema of users, posts and events; nothing is run.
+
+## GET /play?q=<sql>
+
+The playground's own link, asked for JSON, answers with the query's types, so a link you share works for an agent too.
+
+```sh
+curl -H 'accept: application/json' 'https://reylo.dev/play?q=select+name+from+users+where+id+%3D+%3Aid'
+```
+
+## GET /play/api/analyze?q=<sql>
+
+A query's params, return type, row type, cardinality and errors, analyzed against the playground's sample schema of users, posts and events and never run.
+
+```sh
+curl 'https://reylo.dev/play/api/analyze?q=select+name+from+users+where+id+%3D+%3Aid'
+```
+
+```json
+{
+  "params": "{ id: number }",
+  "returns": "{ name: string } | null",
+  "element": "{ name: string }",
+  "cardinality": "maybeOne",
+  "diagnostics": []
+}
+```
+
+## GET /play/api/schema
+
+The tables with their columns and types, and the functions and type names the editor completes.
+
+```sh
+curl 'https://reylo.dev/play/api/schema'
+```

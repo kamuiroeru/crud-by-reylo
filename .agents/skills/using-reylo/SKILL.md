@@ -7,7 +7,7 @@ description: "Use in a project that imports .sql files with Reylo, which a tscon
 
 Reylo lets TypeScript import a `.sql` file as a typed query. The types come from the database itself: the parameters, the columns and their nullability, nested JSON and how many rows the query returns. Nothing is declared by hand, so a type is changed by changing the SQL or the schema, never by an annotation.
 
-The docs are https://reylo.dev, with a page per database, https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite and https://reylo.dev/duckdb, all served as Markdown at https://reylo.dev/llms.txt. Read the section a task touches before writing SQL for it.
+The Reylo documentation is cached in [references/llms.txt](references/llms.txt). Read the relevant sections of that local file before writing SQL; search it by heading or keyword rather than fetching reylo.dev. The reylo.dev links below identify sections in the local documentation, not instructions to fetch them. Refresh the file when updating Reylo, as described in the project's AGENTS.md. The optional playground API is an exception only when explicitly needed.
 
 ## Before changing anything
 

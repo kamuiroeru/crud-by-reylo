@@ -1,4 +1,6 @@
-Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
+Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. The documentation is cached at `.agents/skills/using-reylo/references/llms.txt`; search the relevant sections there instead of fetching reylo.dev. The links below identify sections in that local file.
+
+When updating Reylo, refresh the documentation with `curl -fsSL https://reylo.dev/llms.txt -o .agents/skills/using-reylo/references/llms.txt`. If updating the `using-reylo` skill replaces its local instructions, restore its instruction to use this cached file.
 
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/colinhacks/reylo/tree/main/examples
 
