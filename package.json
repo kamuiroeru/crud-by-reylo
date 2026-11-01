@@ -1,5 +1,22 @@
 {
+  "type": "module",
+  "scripts": {
+    "setup": "node src/setup.ts",
+    "start": "node --import reylo/register src/main.ts",
+    "spellcheck": "cspell lint . --dot --gitignore --no-progress",
+    "typecheck": "tsc --noEmit --runExternalCode"
+  },
   "devDependencies": {
+    "@types/node": "^26.6.6",
+    "cspell": "^10.4.0",
     "typescript": "^7.1.0-beta"
+  },
+  "dependencies": {
+    "@reylosql/sqlite": "^0.6.0",
+    "reylo": "^0.6.0",
+    "sqlite3": "^6.0.1"
+  },
+  "allowScripts": {
+    "sqlite3@6.0.1": true
   }
 }

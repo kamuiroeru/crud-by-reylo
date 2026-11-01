@@ -1,0 +1,10 @@
+words:
+- reylo
+- reylosql
+- colinhacks
+- llms
+- nvmrc
+- rspack
+ignorePaths:
+- .agents/**
+- .git/**

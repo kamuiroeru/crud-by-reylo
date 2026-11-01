@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "strict": true,
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "contentMappers": [
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
+  ],
+  "include": ["src"]
+}
