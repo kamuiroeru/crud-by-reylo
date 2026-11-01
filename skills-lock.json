@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "using-reylo": {
+      "source": "colinhacks/reylo",
+      "sourceType": "github",
+      "skillPath": "skills/using-reylo/SKILL.md",
+      "computedHash": "711165e8332449bd0b60a97f3e4ba2943c4ed84027c5e73c4ec808a480bb9fe7"
+    }
+  }
+}
